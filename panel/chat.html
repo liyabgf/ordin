@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ordin</title>
+<style>
+:root{color-scheme:light;font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;color:#263733;background:#f6f7f5;--ink:#263733;--muted:#68766f;--line:#dce3df;--surface:#fff;--soft:#edf4f0;--accent:#176b59;--danger:#a63832;--warn:#8a5a18}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;min-width:0}
+button,input,textarea,select{font:inherit;color:inherit}
+button,summary,a{touch-action:manipulation}
+button,summary{cursor:pointer}
+button{min-height:42px;padding:8px 13px;border:1px solid var(--line);border-radius:7px;background:var(--surface)}
+button:hover{background:var(--soft)}
+button:disabled{opacity:.55;cursor:default}
+button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid #238b75;outline-offset:2px}
+a{color:var(--accent)}
+input,select,textarea{max-width:100%;border:1px solid var(--line);border-radius:7px;padding:9px 11px;background:var(--surface)}
+.shell{display:grid;grid-template-columns:240px minmax(0,1fr);min-height:100dvh}
+aside{min-width:0;padding:22px 16px;display:flex;flex-direction:column;gap:18px;background:#f0f2ed;border-right:1px solid var(--line)}
+.side-head{display:flex;flex-direction:column;gap:12px}
+.side-head b{color:var(--muted);font-size:12px;font-weight:650}
+#conversation-new,#send{color:#fff;background:var(--accent);border-color:var(--accent)}
+#conversation-list{min-height:80px;display:flex;flex-direction:column;gap:4px;overflow:auto}
+.conversation-item{width:100%;min-width:0;display:flex;justify-content:space-between;gap:8px;text-align:left;background:transparent;border-color:transparent}
+.conversation-item span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.conversation-item small{flex:none;font-size:11px;color:var(--muted)}
+.conversation-item[aria-current=true]{background:#fff;border-color:var(--line)}
+.history-tools{display:flex;flex-wrap:wrap;gap:6px}
+.history-tools button{font-size:12px}
+.advanced{margin-top:auto;font-size:13px}
+.task-continue{display:flex;flex-direction:column;gap:8px;margin:12px 0}
+#task-id{width:100%}
+.workspace{min-width:0;height:100dvh;display:flex;flex-direction:column;overflow:hidden}
+.workspace>header{min-height:58px;display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:10px clamp(16px,3vw,40px);border-bottom:1px solid var(--line);background:#fff}
+.header-spacer{flex:1}
+#conversation-title{font-weight:650}
+#conversation-title-input{width:min(360px,100%)}
+.workspace>header label{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px}
+#chat-model{max-width:250px}
+.workspace>header details{position:relative}
+.workspace>header details>div{position:absolute;z-index:5;top:100%;right:0;display:grid;min-width:190px;padding:8px;gap:5px;background:#fff;border:1px solid var(--line);border-radius:7px;box-shadow:0 10px 30px #26373318}
+.readiness{flex:0 0 100%;color:var(--muted);font-size:12px}
+#workspace{min-height:0;padding:0}
+#log{flex:1;min-height:0;overflow:auto;padding:24px 28px}
+footer,.workspace>header{flex:none}
+.welcome{flex:none}
+#log,.welcome{width:min(820px,100%);margin:0 auto}
+.welcome{padding:clamp(24px,5vh,56px) 0 22px}
+.mark{color:var(--accent);font-size:24px}
+.welcome h1{margin:8px 0;color:var(--ink);font-size:27px;line-height:1.25;font-weight:650}
+.welcome p{max-width:660px;margin:0 0 20px;color:var(--muted)}
+.examples{display:flex;flex-wrap:wrap;gap:8px}
+.example{text-align:left}
+.msg{display:flex;margin:0 0 20px}
+.msg.user{justify-content:flex-end}
+.bubble{max-width:min(80%,720px);padding:12px 16px;border-radius:10px;background:#fff;border:1px solid var(--line);overflow-wrap:anywhere;white-space:pre-wrap}
+.msg.user .bubble{background:#eaf3ee;border-color:#d8e7df}
+.msg.ordin .bubble{background:transparent;border-color:transparent;padding-left:0}
+.task-card{width:min(720px,100%);margin:10px 0 18px;padding:14px 16px;border:1px solid var(--line);border-radius:8px;background:#fff}
+.task-card a{display:inline-block;margin-top:8px}
+.working,#send-retry{width:min(820px,100%);margin:0 auto 10px;color:var(--muted)}
+.error{width:min(820px,100%);margin:10px auto;padding:10px 12px;border-left:3px solid var(--danger);background:#fbefee;color:#6d302d}
+footer{padding:12px clamp(16px,4vw,56px) 16px;border-top:1px solid var(--line);background:#fff}
+.composer{width:min(820px,100%);display:flex;align-items:flex-end;gap:10px;margin:0 auto}
+#input{flex:1;min-width:0;min-height:52px;max-height:180px;resize:vertical}
+.hint{width:min(820px,100%);margin:5px auto 0;color:var(--muted);font-size:12px}
+#conversation-error{color:var(--danger);font-size:12px}
+@media(max-width:760px){.shell{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
+aside{height:auto;max-height:35dvh;padding:10px 12px;gap:8px;border-right:0;border-bottom:1px solid var(--line)}
+.side-head{flex-direction:row;align-items:center;justify-content:space-between}
+#conversation-list{min-height:40px;max-height:16dvh}
+.advanced{margin-top:0}
+.workspace{height:65dvh;min-height:430px}
+.workspace>header{padding:8px 12px;gap:8px}
+#chat-model{max-width:170px}
+#workspace{padding:0}
+#log{padding:16px 14px}
+.welcome h1{font-size:23px}
+.bubble{max-width:92%}
+footer{padding:9px 12px 12px}
+}
+
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside aria-label="对话历史">
+    <div class="side-head"><b>对话历史</b><button id="conversation-new" type="button">＋ 新对话</button></div>
+    <div class="history-tools"><button id="conversation-refresh" type="button" title="刷新对话列表">刷新</button><button id="history-retry" type="button" title="重新读取消息">重试历史</button><button id="history-older" type="button" hidden>更早消息</button></div>
+    <nav id="conversation-list" aria-label="对话列表"></nav>
+    <details class="advanced"><summary>高级工具</summary><div class="task-continue"><input id="task-id" type="text" aria-label="任务 ID" placeholder="完整任务 ID"><button id="continue-task" type="button">在新对话中查看任务</button></div></details>
+    <div id="conversation-error" role="alert" aria-live="polite"></div>
+  </aside>
+  <section class="workspace" id="workspace">
+    <header><b>Ordin</b><span id="conversation-title"></span><input id="conversation-title-input" aria-label="对话标题" maxlength="200" hidden><span class="header-spacer"></span><label>模型 <select id="chat-model"><option value="">使用默认模型</option></select></label><details><summary>更多</summary><div class="more-actions"><button id="conversation-rename" type="button">重命名</button><button id="conversation-archive" type="button">归档</button><button id="conversation-delete" type="button">删除</button><button id="settings-open" type="button">对话与执行设置</button></div></details><span class="readiness" id="readiness-status" role="status">正在检查设置…</span></header>
+    <section class="welcome" id="welcome" hidden><div class="mark" aria-hidden="true">✦</div><h1 id="welcome-title">聊聊想法，或交代一件事</h1><p>我是 Ordin。可以帮你理清思路、规划工作，把需要推进的事变成可跟进的任务。</p><div class="examples"><button id="example-summarize" class="example" type="button">总结一段内容</button><button id="example-plan" class="example" type="button">梳理工作计划</button><button id="example-explain" class="example" type="button">一起分析问题</button></div></section>
+    <main id="log" aria-live="polite"></main>
+    <div class="working" id="working" role="status" hidden>Ordin 正在思考并处理你的消息…</div><button id="send-retry" type="button" hidden>重试这条消息</button>
+    <footer><div class="composer"><textarea id="input" aria-label="消息" placeholder="说点什么，或交代一件事（Enter 发送，Shift+Enter 换行）"></textarea><button id="send" type="button">发送</button></div><div class="hint" id="hint">Enter 发送 · Shift+Enter 换行 · 草稿自动保存</div></footer>
+  </section>
+</div>
+<script>
+(() => {
+  const API = "/ordin/api/"
+  const SELECTED_KEY = "ordin.chat.selectedConversation"
+  const DRAFTS_KEY = "ordin.chat.conversationDrafts"
+  const log = document.getElementById("log")
+  const input = document.getElementById("input")
+  const send = document.getElementById("send")
+  const hint = document.getElementById("hint")
+  const modelSelect = document.getElementById("chat-model")
+  const list = document.getElementById("conversation-list")
+  const title = document.getElementById("conversation-title")
+  const titleInput = document.getElementById("conversation-title-input")
+  const errorBox = document.getElementById("conversation-error")
+  const older = document.getElementById("history-older")
+  const taskIdInput = document.getElementById("task-id")
+  const continueTask = document.getElementById("continue-task")
+  const welcome = document.getElementById("welcome"), workspace = document.getElementById("workspace"), working = document.getElementById("working"), retry = document.getElementById("send-retry"), readiness = document.getElementById("readiness-status")
+  let failedText = ""
+  let conversations = []
+  const requested = new URLSearchParams(window.location.search)
+  let selectedId = requested.get("conversation") || localStorage.getItem(SELECTED_KEY) || ""
+  let selected = null
+  let generation = 0
+  let cursor = null
+  let historyReady = false
+  let loading = false
+  let creating = false
+  let listing = false
+  let continuing = false
+  const drafts = (() => { try { return JSON.parse(localStorage.getItem(DRAFTS_KEY) || "{}") } catch { return {} } })()
+  const saveDrafts = () => localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts))
+  const api = async (path, options = {}) => {
+    const response = await fetch(API + path, { ...options, headers: { "x-ordin-request": "1", ...(options.headers || {}) } })
+    const body = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(body.error || body.message || ("请求失败：" + response.status))
+    return body
+  }
+  const setError = message => { errorBox.textContent = message || "" }
+  const add = (role, text, extra) => {
+    const row = document.createElement("div")
+    row.className = "msg " + role + (extra ? " " + extra : "")
+    const bubble = document.createElement("div")
+    bubble.className = "bubble"
+    bubble.textContent = String(text ?? "")
+    row.appendChild(bubble)
+    log.appendChild(row)
+    welcome.hidden = true; workspace.setAttribute("class", "workspace")
+    log.scrollTop = log.scrollHeight
+  }
+  const renderList = () => {
+    list.replaceChildren()
+    for (const conversation of conversations) {
+      const button = document.createElement("button")
+      button.type = "button"
+      button.className = "conversation-item"
+      button.setAttribute("data-id", conversation.id)
+      button.setAttribute("aria-current", conversation.id === selectedId ? "true" : "false")
+      const label = document.createElement("span")
+      label.textContent = !conversation.title || conversation.title === "New conversation" ? "新对话" : conversation.title
+      button.appendChild(label)
+      if (conversation.archivedAt) { const mark = document.createElement("small"); mark.textContent = "已归档"; button.appendChild(mark) }
+      button.addEventListener("click", () => selectConversation(conversation.id))
+      list.appendChild(button)
+    }
+  }
+  const updateControls = () => {
+    title.textContent = !selected?.title || selected.title === "New conversation" ? "新对话" : selected.title
+    titleInput.value = selected?.title || ""
+    titleInput.hidden = true
+    title.hidden = false
+    const archived = !!selected?.archivedAt
+    document.getElementById("conversation-archive").textContent = archived ? "恢复" : "归档"
+    document.getElementById("conversation-archive").disabled = !selected
+    document.getElementById("conversation-rename").disabled = !selected
+    document.getElementById("conversation-delete").disabled = !selected
+    send.disabled = !selected || archived || !historyReady || loading
+    input.disabled = !selected || archived || !historyReady
+    continueTask.disabled = continuing
+    welcome.hidden = !historyReady || !!log.children.length
+    workspace.setAttribute("class", welcome.hidden ? "workspace" : "workspace empty")
+    working.hidden = !loading
+    send.textContent = loading ? "发送中" : "发送"
+  }
+  const loadHistory = async (id, token, before) => {
+    const query = before ? "?before=" + encodeURIComponent(before) + "&limit=50" : "?limit=50"
+    const result = await api("conversations/" + encodeURIComponent(id) + "/messages" + query)
+    if (id !== selectedId || token !== generation) return
+    const messages = result.messages || []
+    const existing = before ? [...log.children] : []
+    log.replaceChildren()
+    for (const message of messages) add(message.role === "ordin" || message.role === "assistant" ? "ordin" : "user", message.content ?? message.text ?? "")
+    if (before) log.append(...existing)
+    cursor = result.nextCursor || null
+    older.hidden = !cursor
+    historyReady = true
+    updateControls()
+  }
+  const selectConversation = async id => {
+    const next = conversations.find(c => c.id === id)
+    if (!next) return
+    if (selected) { drafts[selectedId] = input.value; saveDrafts() }
+    selectedId = id
+    selected = next
+    localStorage.setItem(SELECTED_KEY, id)
+    const token = ++generation
+    cursor = null; historyReady = false; loading = false
+    input.value = drafts[id] || ""
+    failedText = ""; retry.hidden = true
+    log.replaceChildren(); setError(""); renderList(); updateControls()
+    try { await loadHistory(id, token, null) }
+    catch (error) { if (id === selectedId && token === generation) { setError("读取历史失败：" + error.message); updateControls() } }
+  }
+  const refreshList = async () => {
+    if (listing) return
+    listing = true
+    const id = selectedId, token = generation
+    setError("")
+    try {
+      const result = await api("conversations?includeArchived=true")
+      if (id !== selectedId || token !== generation) return
+      conversations = result.conversations || []
+      renderList()
+      const current = conversations.find(c => c.id === selectedId)
+      if (current) {
+        if (!historyReady) await selectConversation(current.id)
+        else { selected = current; updateControls() }
+      } else if (selectedId) {
+        selected = null; selectedId = ""; localStorage.removeItem(SELECTED_KEY); ++generation
+        if (conversations.length) await selectConversation(conversations[0].id)
+        else { log.replaceChildren(); updateControls() }
+      } else if (conversations.length) await selectConversation(conversations[0].id)
+      else await createConversation(true)
+    } catch (error) { if (id === selectedId && token === generation) setError("读取对话列表失败：" + error.message) }
+    finally { listing = false }
+  }
+  const createConversation = async initial => {
+    if (creating) return
+    creating = true
+    document.getElementById("conversation-new").disabled = true
+    try {
+      const result = await api("conversations", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({}) })
+      const conversation = result.conversation
+      if (!conversation?.id) throw new Error("新建响应缺少对话 ID")
+      conversations = [conversation, ...conversations]
+      renderList()
+      await selectConversation(conversation.id)
+      if (!initial) input.focus()
+    } catch (error) { setError("新建对话失败：" + error.message) }
+    finally { creating = false; document.getElementById("conversation-new").disabled = false }
+  }
+  const mutateSelected = async (path, method, body) => {
+    if (!selected) return
+    const id = selected.id, token = generation
+    try {
+      const result = await api("conversations/" + encodeURIComponent(id) + path, { method, headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: selected.revision, ...body }) })
+      if (id !== selectedId || token !== generation) return
+      if (method === "DELETE") {
+        conversations = conversations.filter(c => c.id !== id)
+        selected = null; selectedId = ""; localStorage.removeItem(SELECTED_KEY); ++generation
+        renderList(); log.replaceChildren(); historyReady = false
+        if (conversations.length) await selectConversation(conversations[0].id)
+        else await createConversation(true)
+      } else {
+        selected = result.conversation
+        conversations = conversations.map(c => c.id === id ? selected : c)
+        renderList(); updateControls()
+      }
+      setError("")
+    } catch (error) { if (id === selectedId && token === generation) setError("保存对话失败：" + error.message) }
+  }
+  const continueSelectedTask = async () => {
+    const ticketId = taskIdInput.value.trim()
+    if (!ticketId || continuing) return
+    const originId = selectedId, token = generation
+    if (originId) { drafts[originId] = input.value; saveDrafts() }
+    continuing = true; setError(""); updateControls()
+    try {
+      const result = await api("conversations/from-task", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ticketId }) })
+      if (originId !== selectedId || token !== generation) return
+      const conversation = result.conversation
+      if (!conversation?.id) throw new Error("接续响应缺少对话 ID")
+      await refreshList()
+      if (originId !== selectedId || token !== generation) return
+      if (!conversations.some(c => c.id === conversation.id)) conversations = [conversation, ...conversations]
+      else conversations = conversations.map(c => c.id === conversation.id ? conversation : c)
+      renderList()
+      await selectConversation(conversation.id)
+      taskIdInput.value = ""
+      setError("")
+    } catch (error) {
+      if (originId === selectedId && token === generation) setError("继续任务失败：" + error.message)
+    } finally {
+      continuing = false; updateControls()
+    }
+  }
+  const submit = async () => {
+    const text = input.value.trim(), target = selected
+    if (!text || !target || target.archivedAt || !historyReady || loading) return
+    const id = target.id, token = generation
+    failedText = input.value; retry.hidden = true
+    add("user", text)
+    loading = true; updateControls()
+    try {
+      const body = await api("conversations/" + encodeURIComponent(id) + "/message", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text, ...(modelSelect.value ? { model: modelSelect.value } : {}) }) })
+      if (id !== selectedId || token !== generation) return
+      for (const line of body.sent || []) add("ordin", String(line))
+      if (!(body.sent || []).length) add("ordin", String(body.reply ?? ""))
+      let taskError = false
+      for (const outcome of body.toolOutcomes || []) {
+        if (outcome.name !== "create_task") continue
+        if (!outcome.ok) { taskError = true; add("ordin", "任务创建失败：" + String(outcome.error || "请稍后重试"), "err"); continue }
+        const data = outcome.data || {}, ticketId = data.id || data.ticketId
+        if (!ticketId) continue
+        const card = document.createElement("section"); card.className = "task-card"; card.setAttribute("data-task-id", String(ticketId))
+        const description = document.createElement("div")
+        description.textContent = "任务 " + ticketId + " · " + (data.title || "新任务") + "\n" + (data.state === "claimed" || data.dispatch?.state === "claimed" ? "已派发 · 执行方已领取" : "已创建 · 等待执行方领取")
+        const link = document.createElement("a"); link.href = "/ordin/?tab=workspace&ticketId=" + encodeURIComponent(ticketId); link.textContent = "查看任务 →"
+        link.addEventListener("click", event => { if (window.parent !== window) { event.preventDefault(); window.parent.postMessage({type:"ordin:navigate",tab:"workspace",ticketId:String(ticketId)}, window.location.origin) } })
+        card.append(description,link); log.appendChild(card)
+      }
+      if (taskError) { drafts[id] = failedText; saveDrafts(); retry.hidden = false }
+      else { if (input.value === failedText) input.value = ""; drafts[id] = input.value; failedText = ""; saveDrafts() }
+      const conversation = conversations.find(c => c.id === id)
+      if (conversation) { conversation.title = body.title || conversation.title; conversation.lastMessageAt = body.lastMessageAt || conversation.lastMessageAt; renderList(); title.textContent = conversation.title }
+      setError("")
+    } catch (error) { if (id === selectedId && token === generation) { add("ordin", "连接失败：" + error.message, "err"); retry.hidden = false; drafts[id] = input.value; saveDrafts() } }
+    finally { if (id === selectedId && token === generation) { loading = false; updateControls(); input.focus() } }
+  }
+  const loadModels = async () => {
+    try {
+      const config = await api("model/config")
+      const previous = modelSelect.value
+      const ids = [...new Set([...(config.models || []), ...(config.defaultModel ? [config.defaultModel] : [])])]
+      modelSelect.replaceChildren(...["", ...ids].map(id => { const option = document.createElement("option"); option.value = id; option.textContent = id || ("使用默认模型" + (config.defaultModel ? "（" + config.defaultModel + "）" : "")); return option }))
+      modelSelect.value = ids.includes(previous) ? previous : ""
+      readiness.textContent = config.configuredKey === false ? "模型尚未配置 · 请打开设置" : "模型已配置"
+    } catch (error) { readiness.textContent = "未能读取模型状态 · 检查设置" }
+    try { const status = await api("execution/status"); readiness.textContent += status.health?.ok ? " · 执行方协议检查通过" + (status.health.warnings?.length ? "（有能力限制，请查看设置）" : "") : " · 执行方状态未确认" } catch { readiness.textContent += " · 未能读取执行状态，检查设置" }
+  }
+  document.getElementById("conversation-new").addEventListener("click", () => createConversation(false))
+  document.getElementById("conversation-refresh").addEventListener("click", refreshList)
+  document.getElementById("history-retry").addEventListener("click", () => selected && selectConversation(selected.id))
+  older.addEventListener("click", async () => {
+    if (!selected || !cursor) return
+    const id = selected.id, token = generation, before = cursor
+    try { await loadHistory(id, token, before) } catch (error) { if (id === selectedId && token === generation) setError("读取较早历史失败：" + error.message) }
+  })
+  document.getElementById("conversation-rename").addEventListener("click", () => {
+    if (!selected) return
+    if (titleInput.hidden) { title.hidden = true; titleInput.hidden = false; titleInput.focus(); titleInput.select?.(); return }
+    const wanted = titleInput.value.trim()
+    if (!wanted || wanted === selected.title) { updateControls(); return }
+    return mutateSelected("", "PATCH", { title: wanted })
+  })
+  titleInput.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); document.getElementById("conversation-rename").click() } if (event.key === "Escape") updateControls() })
+  document.getElementById("conversation-archive").addEventListener("click", () => {
+    if (!selected) return
+    return mutateSelected(selected.archivedAt ? "/restore" : "/archive", "POST", {})
+  })
+  document.getElementById("conversation-delete").addEventListener("click", () => {
+    if (selected && window.confirm("删除此对话？其任务和结果会保留。")) return mutateSelected("", "DELETE", {})
+  })
+  input.addEventListener("input", () => { if (selectedId) { drafts[selectedId] = input.value; saveDrafts() } })
+  send.addEventListener("click", submit)
+  continueTask.addEventListener("click", continueSelectedTask)
+  input.addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); return submit() } })
+  for (const [id, text] of [["example-summarize","请帮我总结下面的内容，并提炼关键要点：\n\n"],["example-plan","请帮我把这件事拆解成清晰的工作计划：\n\n"],["example-explain","请帮我分析这个问题，先问我需要补充的信息：\n\n"]]) document.getElementById(id).addEventListener("click", () => { input.value = text; if (selectedId) { drafts[selectedId] = text; saveDrafts() } input.focus() })
+  retry.addEventListener("click", () => { if (failedText) { input.value = failedText; return submit() } })
+  document.getElementById("settings-open").addEventListener("click", () => { if (window.parent !== window) window.parent.postMessage({type:"ordin:navigate",tab:"settings"}, window.location.origin); else window.location.href = "/ordin/#settings" })
+  window.addEventListener("focus", loadModels)
+  loadModels()
+  const initialize = async () => {
+    await refreshList()
+    const requestedTask = requested.get("task")
+    if (requestedTask) {
+      requested.delete("task")
+      window.history.replaceState(null, "", "/ordin/chat" + (requested.toString() ? "?" + requested.toString() : ""))
+      taskIdInput.value = requestedTask
+      await continueSelectedTask()
+    }
+  }
+  initialize()
+})()
+</script>
+</body>
+</html>

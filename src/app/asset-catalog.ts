@@ -1,0 +1,130 @@
+import { createHash, randomUUID } from 'node:crypto'
+import { z } from 'zod'
+import { validateAssetRefs, type AssetRef } from '../core/model.ts'
+import type { Store } from './store.ts'
+
+type Row = Record<string, unknown>
+type SavedAsset = Parameters<Store['assets']['save']>[0]
+export class AssetCatalogError extends Error {
+  constructor(readonly status: 400 | 403 | 404 | 409, message: string) { super(message) }
+}
+const kind = z.enum(['document', 'dataset', 'report', 'code', 'reference'])
+const tags = z.array(z.string().trim().min(1).max(64)).max(20)
+const expectedRevision = z.number().int().positive().optional()
+const importSchema = z.object({
+  text: z.string().min(1).refine(value => Buffer.byteLength(value, 'utf8') <= 1_048_576, 'Content exceeds 1MB'),
+  name: z.string().trim().min(1).max(200), description: z.string().max(2000).default(''),
+  kind, tags: tags.default([]),
+  mimeType: z.enum(['text/plain', 'text/markdown', 'application/json', 'text/csv', 'text/tab-separated-values']).default('text/plain'),
+  contentKind: z.enum(['text', 'data']).default('text'), ownerProfileId: z.literal('default').optional(),
+}).strict()
+const patchSchema = z.object({
+  name: z.string().trim().min(1).max(200).optional(), description: z.string().max(2000).optional(),
+  tags: tags.optional(), archived: z.boolean().optional(), expectedRevision,
+}).strict().refine(value => Object.keys(value).some(key => key !== 'expectedRevision'), 'An edit is required')
+const revision = (row: Row): number => typeof row.revision === 'number' ? row.revision : 1
+const record = (value: unknown): Row => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Row : {}
+const history = (row: Row): Row[] => Array.isArray(row.revisions) ? row.revisions.map(record) : []
+const snapshot = (row: Row): Row => { const { revisions: _history, ...rest } = row; return structuredClone({ ...rest, revision: revision(row) }) }
+
+/** DB JSON content is authoritative. Filesystem projection and Coordinator reuse are separate contracts. */
+export class AssetCatalog {
+  constructor(private readonly store: Store, _stateDir: string) {}
+  private access(row: Row): boolean {
+    if ((row.ownerProfileId ?? 'default') !== 'default') return false
+    const ticketId = record(row.source).ticketId
+    if (ticketId === undefined) return true
+    if (typeof ticketId !== 'string') return false
+    const ticket = this.store.tickets.get(ticketId)
+    return ticket !== undefined && ticket.deleted === undefined &&
+      (ticket.conversationId === undefined || this.store.conversations.get(ticket.conversationId)?.profileId === 'default')
+  }
+  private view(row: Row): Row {
+    const { content: _content, revisions: _history, importFingerprint: _fingerprint, ...rest } = row
+    const source = record(row.source)
+    // Expose provenance and acceptance without disclosing raw filesystem paths.
+    const { path: _path, ...publicSource } = source
+    return { ...rest, revision: revision(row), source: publicSource }
+  }
+  private require(id: string): Row {
+    const row = this.store.assets.get(id)
+    if (row === undefined) throw new AssetCatalogError(404, 'Asset unavailable')
+    if (!this.access(row)) throw new AssetCatalogError(403, 'Asset source access denied')
+    return row
+  }
+  list(query: URLSearchParams): Row[] {
+    const filter = z.object({ query: z.string().max(200).optional(), kind: kind.optional(), includeArchived: z.enum(['true', 'false']).optional(), limit: z.coerce.number().int().min(1).max(200).default(100) }).strict().parse(Object.fromEntries(query))
+    const needle = filter.query?.trim().toLowerCase()
+    return this.store.assets.list({ includeArchived: filter.includeArchived === 'true', ...(filter.kind === undefined ? {} : { kind: filter.kind }), limit: 2_147_483_647 })
+      .filter(row => this.access(row) && row.deletedAt === undefined && row.deleted === undefined)
+      .filter(row => needle === undefined || [row.name, row.description, ...(Array.isArray(row.tags) ? row.tags : [])].some(value => String(value ?? '').toLowerCase().includes(needle)))
+      .slice(0, filter.limit).map(row => this.view(row))
+  }
+  /** Trusted service only: managed DB content, never a filesystem path. Public views omit content. */
+  resolve(input: unknown): { ref: AssetRef; content: string } {
+    const requested = typeof input === 'string' ? { id: input } : record(input)
+    if (Object.keys(requested).some(key => !['id', 'revision', 'contentHash'].includes(key)) || typeof requested.id !== 'string') throw new AssetCatalogError(400, 'Invalid asset reference')
+    const row = this.require(requested.id)
+    if (row.archived === true || row.deletedAt !== undefined || row.deleted !== undefined || row.status !== 'active') throw new AssetCatalogError(409, 'Asset unavailable: inactive, archived or deleted')
+    if (record(row.source).type !== 'operator-import' || record(row.source).actor !== 'operator') throw new AssetCatalogError(403, 'Explicit operator import required')
+    const selected = requested.revision === undefined || requested.revision === revision(row) ? row : history(row).find(item => item.revision === requested.revision)
+    if (selected === undefined) throw new AssetCatalogError(409, 'Asset revision unavailable')
+    const ref = validateAssetRefs([{ id: row.id, revision: revision(selected), contentHash: selected.contentHash }])[0]!
+    if (requested.contentHash !== undefined && requested.contentHash !== ref.contentHash) throw new AssetCatalogError(409, 'Asset hash mismatch')
+    if (typeof selected.content !== 'string' || createHash('sha256').update(selected.content, 'utf8').digest('hex') !== ref.contentHash) throw new AssetCatalogError(409, 'Asset content hash mismatch')
+    return { ref, content: selected.content }
+  }
+  get(id: string): Row { return this.view(this.require(id)) }
+  revisions(id: string): Row[] { const row = this.require(id); return [...history(row), snapshot(row)].map(value => this.view(value)) }
+  import(input: unknown): Row {
+    const parsed = importSchema.parse(input)
+    const hash = createHash('sha256').update(parsed.text, 'utf8').digest('hex')
+    const fingerprint = JSON.stringify([hash, parsed.name, parsed.description, parsed.kind, parsed.tags, parsed.mimeType, parsed.contentKind])
+    return this.store.atomic(() => {
+      const found = this.store.assets.list({ includeArchived: true, limit: 2_147_483_647 }).find(row => record(row.source).type === 'operator-import' && row.ownerProfileId === 'default' && row.importFingerprint === fingerprint && this.access(row))
+      if (found !== undefined) {
+        if (found.deletedAt !== undefined || found.deleted !== undefined) throw new AssetCatalogError(409, 'Asset is deleted')
+        return this.view(found)
+      }
+      const at = new Date().toISOString()
+      const { text, ...metadata } = parsed
+      const row = { ...metadata, id: 'asset-' + randomUUID(), ownerProfileId: 'default', source: { type: 'operator-import', actor: 'operator', at }, contentHash: hash, importFingerprint: fingerprint, content: text, createdAt: at, updatedAt: at, accessLevel: 'private', revision: 1, status: 'active', archived: false, usageCount: 0, revisions: [], audit: [{ action: 'import', actor: 'operator', at, revision: 1 }] }
+      this.store.assets.save(row)
+      return this.view(row)
+    })
+  }
+  private change(id: string, expected: number | undefined, action: string, mutate: (row: Row, at: string) => Row): Row {
+    return this.store.atomic(() => {
+      const row = this.require(id)
+      if (row.deletedAt !== undefined || row.deleted !== undefined) throw new AssetCatalogError(409, 'Asset is deleted')
+      if (record(row.source).type !== 'operator-import') throw new AssetCatalogError(409, 'Ticket assets are immutable here')
+      if (expected !== undefined && revision(row) !== expected) throw new AssetCatalogError(409, 'Asset revision conflict')
+      const at = new Date().toISOString()
+      const prior = snapshot(row)
+      const next = { ...mutate(row, at), revision: revision(row) + 1, updatedAt: at, revisions: [...history(row), prior], audit: [...(Array.isArray(row.audit) ? row.audit : []), { action, actor: 'operator', at, revision: revision(row) + 1 }] }
+      this.store.assets.save(next as unknown as SavedAsset)
+      return this.view(next)
+    })
+  }
+  patch(id: string, input: unknown): Row {
+    const { expectedRevision: expected, ...changes } = patchSchema.parse(input)
+    return this.change(id, expected, 'patch', row => ({ ...row, ...changes }))
+  }
+  delete(id: string, input: unknown): Row {
+    const parsed = z.object({ expectedRevision }).strict().parse(input)
+    return this.change(id, parsed.expectedRevision, 'delete', (row, at) => {
+      // Until typed assetRefs arrive, inspect explicit JSON reference fields only, recursively.
+      const references = (value: unknown): boolean => {
+        if (Array.isArray(value)) return value.some(references)
+        const entry = record(value)
+        return Object.entries(entry).some(([key, item]) => {
+          if (key === 'assetId') return item === id
+          if (key === 'assetRefs' || key === 'assetIds') return Array.isArray(item) && item.some(ref => ref === id || record(ref).id === id || record(ref).assetId === id)
+          return typeof item === 'object' && item !== null && references(item)
+        })
+      }
+      if (this.store.tickets.open().some(ticket => ticket.deleted === undefined && references(ticket)) || this.store.works.list().some(work => work.archivedAt === undefined && references(work))) throw new AssetCatalogError(409, 'Asset is referenced by an active Ticket or Work')
+      return { ...row, archived: true, deletedAt: at, deleted: { actor: 'operator', at } }
+    })
+  }
+}

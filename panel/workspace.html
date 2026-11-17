@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>我的任务 · Ordin</title>
+<style>
+:root {font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;color:#263733;background:#f7f8f6;--teal:#176b59;--line:#dce3df;--muted:#697871}
+
+* {box-sizing:border-box}
+ [hidden] {display:none!important}
+ body {margin:0}
+ button,input,textarea {font:inherit;color:inherit}
+ button,summary {cursor:pointer}
+ button:disabled {opacity:.5;cursor:default}
+
+button:focus-visible,input:focus-visible,textarea:focus-visible,summary:focus-visible {outline:3px solid #238b75;outline-offset:2px}
+
+header {max-width:1240px;margin:auto;padding:28px 28px 18px;display:flex;align-items:flex-start;justify-content:space-between;gap:20px}
+
+h1 {font-size:26px;font-weight:650;letter-spacing:-.4px;margin:5px 0 6px}
+ h2 {font-size:20px;margin:0 0 12px}
+ h3 {font-size:14px;margin:0 0 10px}
+
+.eyebrow {color:var(--teal);font-size:11px;letter-spacing:.1em;font-weight:700}
+ .muted {color:var(--muted);font-size:13px;line-height:1.65}
+
+main {max-width:1240px;margin:auto;padding:8px 28px 36px}
+.toolbar,.actions {display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.toolbar {margin-bottom:20px}
+.tabs {display:flex;gap:4px;flex-wrap:wrap}
+
+.btn,.tabs button {min-height:42px;border:1px solid var(--line);border-radius:7px;background:white;color:inherit;padding:8px 13px}
+.tabs button {border-color:transparent;background:transparent}
+.tabs button[aria-selected=true] {color:#176b59;background:#e6f1eb;font-weight:600}
+.btn.primary {background:var(--teal);border-color:var(--teal);color:white}
+.btn.danger {color:#a63832}
+
+input,textarea {border:1px solid var(--line);border-radius:7px;padding:10px 12px;background:#fff}
+textarea {display:block;width:100%;min-height:100px;margin:8px 0 12px;resize:vertical}
+
+#search {flex:1;min-width:160px;max-width:350px;margin-right:auto}
+.layout {display:grid;grid-template-columns:minmax(240px,.8fr) minmax(0,1.5fr);gap:20px;align-items:start}
+
+.panel {min-width:0;border:1px solid var(--line);border-radius:10px;background:white;padding:22px}
+.list-heading {display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+.list-heading h2 {font-size:15px;margin:0}
+
+.task {width:100%;text-align:left;border:1px solid var(--line);border-radius:8px;padding:14px;margin:0 0 9px;background:#fff;color:inherit}
+.task[aria-current=true] {border-color:#4b9b84;background:#f0f7f3}
+.task-title {display:block;margin-bottom:6px;overflow-wrap:anywhere}
+.task p {margin:7px 0 0;font-size:13px;color:var(--muted);overflow-wrap:anywhere}
+
+.badge {display:inline-block;padding:3px 8px;font-size:12px;border-radius:5px;background:#edf3ef;color:#47665b;margin:0 6px 5px 0}
+.badge.warn {background:#fbf0d8;color:#8b601f}
+.badge.bad {background:#faecea;color:#9b443b}
+
+.file-preview{margin-top:14px;border:1px solid var(--line);border-radius:8px;background:#f7faf8;overflow:hidden}.file-preview-head{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--line)}.file-preview pre{margin:0;padding:14px;max-height:420px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace}.section {margin-top:22px;padding-top:20px;border-top:1px solid var(--line)}
+.report {white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px;line-height:1.75}
+.callout {margin-top:18px;padding:16px;background:#f1f7f3;border-radius:8px}
+.question {background:#fff7e8;margin:0 0 12px}
+.timeline {padding-left:20px;font-size:13px;line-height:1.7}
+.timeline li {margin-bottom:10px;overflow-wrap:anywhere}
+
+.error {color:#8c3d35;background:#fcf0ed;border-left:3px solid #b05045;padding:12px;margin:0 0 16px;white-space:pre-wrap;overflow-wrap:anywhere}
+.notice {padding:12px;background:#edf5f1;margin-top:16px;border-radius:7px}
+.file-meta {font-size:12px;color:var(--muted)}
+pre {white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}
+
+.diagnostics {font-size:12px;color:var(--muted);max-width:480px;position:relative;flex:none}
+.diagnostics summary {padding:7px 10px;min-height:38px;border:1px solid var(--line);border-radius:7px;background:#fff}
+.diagnostics[open] #health {position:absolute;right:0;top:44px;z-index:10;width:360px;max-width:80vw;padding:16px;background:white;border:1px solid var(--line);border-radius:8px;box-shadow:0 12px 30px #26373314;overflow-wrap:anywhere}
+
+@media(max-width:760px) {header {padding:20px 16px 12px;flex-wrap:wrap}
+main {padding:8px 16px 24px}
+.layout {grid-template-columns:minmax(0,1fr)}
+.toolbar {align-items:stretch}
+#search {max-width:none;flex-basis:100%}
+.panel {padding:17px}
+.diagnostics[open] #health {left:0;right:auto}
+}
+
+</style>
+</head>
+<body>
+<header><div><div class="eyebrow">ORDIN / WORKSPACE</div><h1>我的任务</h1><div class="muted">进展、结果和需要你决定的事，都在这里。</div></div><details class="diagnostics"><summary>连接与执行状态</summary><div id="health" class="muted" aria-live="polite">正在读取配置状态…</div></details></header>
+<main><div id="error" class="error" role="alert" hidden></div><div class="toolbar"><input id="search" type="search" placeholder="搜索任务标题、摘要" aria-label="搜索任务"><div id="tabs" class="tabs" aria-label="筛选任务"><button data-state="all" aria-selected="true">全部</button><button data-state="open" aria-selected="false">进行中</button><button data-state="attention" aria-selected="false">需要我</button><button data-state="ended" aria-selected="false">已结束</button></div><button id="refresh" class="btn">刷新</button></div>
+<div class="layout"><section class="panel" aria-label="任务列表"><div class="list-heading"><h2>任务列表</h2><span id="count" class="muted"></span></div><div id="list" aria-live="polite">正在读取任务…</div><p class="muted">显示最近 200 项任务。</p></section><section class="panel" aria-label="任务详情"><div id="detail" aria-live="polite"><h2>从一项任务开始</h2><p class="muted">选择左侧的任务，查看它的最新进展。</p></div><div id="selected-content" hidden><div id="action-message" role="status" class="notice" hidden></div><div id="answer-area" class="section" hidden><div id="question" class="callout question"></div><label for="answer">你的回答</label><textarea id="answer" placeholder="补充信息，让这项工作继续"></textarea><button id="answer-send" class="btn primary">发送回答</button></div><div id="note-area" class="section"><label for="note">补充信息</label><p class="muted">把新要求或说明交给这项任务。</p><textarea id="note" placeholder="写下需要补充的内容"></textarea><button id="note-send" class="btn">发送补充</button></div><div class="section actions"><button id="continue" class="btn primary">围绕此任务继续对话</button><button id="retry" class="btn" hidden>重试任务</button><button id="stop" class="btn danger" hidden>请求停止</button><button id="dismiss" class="btn danger" hidden>从任务列表移除</button></div><div class="section"><h3>进展记录</h3><ol id="timeline" class="timeline"></ol></div><div class="section"><h3>交付物与文件</h3><p id="files-status" class="muted"></p><ul id="files"></ul><div id="file-preview" class="file-preview" hidden><div class="file-preview-head"><b id="file-preview-title"></b><button id="file-preview-close" class="btn" type="button">关闭预览</button></div><pre id="file-preview-content"></pre></div></div><details class="section"><summary>技术详情 · 标识、路径和原始状态</summary><pre id="technical"></pre></details></div></section></div></main>
+<script>
+(function () {
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const state = { tickets: [], selected: null, detail: null, progress: null, events: [], files: null, drafts: {}, notices: {}, pending: new Set(), filter: 'all', listGeneration: 0, detailGeneration: 0, previewGeneration: 0 };
+  const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+  const ended = t => Boolean(t.ended || t.endedReason || ['done', 'dropped', 'stopped', 'ended'].includes(t.stage));
+  const retryable = t => t?.canRetry === true;
+  const labels = { pending: '等待开始', running: '进行中', waiting: '等待处理', failed: '遇到问题', blocked: '需要协助', done: '任务已结束', dropped: '已结束', stopped: '停止状态待确认', ended: '任务已结束' };
+  function status(t) {
+    if (t.stage === 'stopped' || t.ended?.outcome === 'stopped') {
+      const evidence = state.events.find(event => event.type === 'stop_result');
+      return evidence?.detail?.ok === true ? '已停止（执行端已确认）' : evidence?.detail?.ok === false ? '停止未获确认，请检查' : '停止请求已排队，等待执行端确认';
+    }
+    return labels[t.stage] || '未知状态：' + String(t.stage ?? '缺失');
+  }
+  function error(e) { $('error').textContent = e?.message || String(e); $('error').hidden = false; }
+  async function api(path, body) {
+    const response = await fetch('/ordin/api/' + path, { method: body === undefined ? 'GET' : 'POST', headers: { 'x-ordin-request': '1', ...(body === undefined ? {} : { 'content-type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const data = await response.json();
+    if (!response.ok) throw Error(data.error?.message || data.error || data.message || '请求失败（HTTP ' + response.status + '）');
+    return data;
+  }
+  function saveDraft() { if (state.selected) state.drafts[state.selected] = { answer: $('answer').value, note: $('note').value }; }
+  function renderList() {
+    const query = $('search').value.trim().toLowerCase();
+    const rows = state.tickets.filter(t => (state.filter === 'all' || state.filter === 'open' && !ended(t) || state.filter === 'ended' && ended(t) || state.filter === 'attention' && (t.waitsForPerson || ['failed', 'blocked', 'waiting'].includes(t.stage))) && (!query || [t.title, t.summary, t.currentNextStep].some(value => String(value || '').toLowerCase().includes(query))));
+    $('count').textContent = rows.length + ' 项';
+    $('list').replaceChildren();
+    for (const t of rows) {
+      const card = document.createElement('button'); card.className = 'task'; card.dataset.id = t.id; card.setAttribute('aria-current', String(state.selected === t.id));
+      card.innerHTML = '<strong class="task-title">' + esc(t.title || '未命名任务') + '</strong><span class="badge ' + (t.waitsForPerson ? 'warn' : ['failed', 'blocked'].includes(t.stage) ? 'bad' : '') + '">' + esc(t.stage === 'stopped' ? '停止状态待确认' : labels[t.stage] || '未知状态：' + t.stage) + '</span><p class="muted">' + esc(t.summary || '暂无摘要') + '</p>' + (t.currentNextStep || t.question ? '<small>' + esc(t.currentNextStep || t.question) + '</small>' : '');
+      card.onclick = () => select(t.id); $('list').appendChild(card);
+    }
+    if (!rows.length) $('list').textContent = state.tickets.length ? '没有找到符合条件的任务。试试其他关键词或状态。' : '还没有任务。可以从顶部导航进入对话，交代你的第一项工作。';
+  }
+  function controls() {
+    const t = state.detail, pending = state.pending.has(state.selected);
+    $('answer-send').disabled = pending || !t?.waitingForAnswer || Boolean(t?.recovery);
+    $('note-send').disabled = pending || !t || ended(t);
+    $('retry').hidden = !t || !retryable(t); $('retry').disabled = pending || !t || !retryable(t);
+    $('dismiss').hidden = !t?.recovery || ended(t); $('dismiss').disabled = pending || !t?.recovery || ended(t);
+    $('stop').hidden = !t || ended(t) || Boolean(t.recovery); $('stop').disabled = pending || !t || ended(t) || state.notices[state.selected]?.stopping === true;
+    $('continue').disabled = pending || !t;
+    $('answer').disabled = pending; $('note').disabled = pending;
+  }
+  function renderDetail() {
+    const t = state.detail; if (!t) return;
+    const latest = t.assignment?.report || t.reports?.at(-1);
+    const acceptanceStatus = t.acceptance?.status;
+    const acceptance = acceptanceStatus === 'pending' ? '验收进行中' : acceptanceStatus === 'accepted' ? '验收已通过' : acceptanceStatus === 'rework' ? '验收要求返工' : acceptanceStatus === 'unverified' ? '验收未验证' : acceptanceStatus === undefined ? '验收状态以任务结果/详情为准' : '未知验收状态：' + String(acceptanceStatus);
+    $('detail').innerHTML = '<h2>' + esc(t.title || '未命名任务') + '</h2><span class="badge">' + esc(status(t)) + '</span><span class="badge">' + esc(acceptance) + '</span><div class="section"><h3>结果 / 最新报告</h3><div class="report">' + esc(t.result?.text || t.result?.summary || latest?.summary || t.summary || '还没有结果报告。') + '</div></div><div class="callout"><h3>当前进展</h3><div class="report">' + esc(state.progress?.lastSaid || t.currentNextStep || (state.progress?.loaded ? '执行端状态：' + (state.progress.agentStatus || '暂无更多进展') : '暂无可用的执行进度')) + '</div><p class="muted">下一步：' + esc(t.recovery ? '需要人工核对恢复状态，确认外部执行端是否仍在运行' : t.currentNextStep || (t.waitingForAnswer ? '等待你的回答' : ended(t) ? '可以查看报告，或继续对话提出新要求' : '等待任务更新，可随时刷新')) + '</p></div>';
+    $('selected-content').hidden = false; $('answer-area').hidden = !t.waitingForAnswer || Boolean(t.recovery); $('note-area').hidden = Boolean(t.waitingForAnswer || ended(t) || t.recovery);
+    $('question').textContent = t.question || '请补充这项任务需要的信息。';
+    const notice = state.notices[t.id]; $('action-message').hidden = !notice; $('action-message').textContent = notice?.text || '';
+    const entries = state.events.length ? state.events.map(e => ({ at: e.at, text: ({ created: '任务已创建', started: '开始执行', report: '收到报告', stop_result: e.detail?.ok ? '执行端确认停止' : '停止未获确认', stopped: '已请求停止', input: '收到补充', answered: '已提交回答' })[e.type] || e.type, detail: e.detail?.summary || e.detail?.reason || e.detail?.text })) : [...(t.assignments || []).map(a => ({ at: a.at, text: '执行记录：' + a.state })), ...(t.reports || []).map(r => ({ at: r.at, text: '报告：' + (r.summary || r.state) })), ...(t.inputs || []).map(i => ({ at: i.at, text: '补充：' + i.text })), ...(t.notes || []).map(n => ({ at: n.at, text: '备注：' + n.text }))].sort((a,b) => String(b.at || '').localeCompare(String(a.at || '')));
+    $('timeline').innerHTML = entries.length ? entries.map(e => '<li>' + esc(e.at || '') + ' · ' + esc(e.text) + (e.detail ? '<div>' + esc(e.detail) + '</div>' : '') + '</li>').join('') : '<li>暂无进展记录。</li>';
+    $('files').innerHTML = state.files?.files?.map(f => f.directory ? '<li>' + esc(f.path) + ' <span class="file-meta">文件夹</span></li>' : '<li><button class="file-link" type="button" data-file="' + esc(f.path) + '">' + esc(f.path) + '</button> <span class="file-meta">' + esc(f.size + ' 字节') + (f.mtime ? ' · ' + esc(f.mtime) : '') + '</span></li>').join('') || '';
+    for (const button of $('files').querySelectorAll?.('button[data-file]') || []) button.onclick = () => previewFile(button.dataset.file);
+    $('files-status').textContent = state.files ? (state.files.files?.length ? (state.files.truncated ? '部分文件（列表已截断）' : '当前工作目录中的文件') + ' · 展示元数据' : '当前没有文件元数据。') : '文件列表暂不可用。';
+    $('file-preview').hidden = true; $('file-preview-content').textContent = ''; $('technical').textContent = JSON.stringify({ ticket: t, progress: state.progress, events: state.events, files: state.files }, null, 2);
+    controls();
+  }
+  function decodeBase64(value) { const bytes = Uint8Array.from(atob(value), c => c.charCodeAt(0)); return new TextDecoder().decode(bytes); }
+  async function previewFile(path) {
+    if (!path || !state.selected) return;
+    const id = state.selected, generation = ++state.previewGeneration;
+    $('file-preview').hidden = false; $('file-preview-title').textContent = path; $('file-preview-content').textContent = '正在读取文件…';
+    try { const file = await api('tickets/' + encodeURIComponent(id) + '/file?path=' + encodeURIComponent(path)); if (generation !== state.previewGeneration || id !== state.selected) return; $('file-preview').hidden = false; $('file-preview-title').textContent = file.path; const content = $('file-preview-content'); if (file.text === true) { content.textContent = decodeBase64(file.base64); } else { content.textContent = '这是二进制文件，无法在面板内预览。'; const link = document.createElement('a'); link.href = 'data:application/octet-stream;base64,' + file.base64; link.download = file.path.split('/').pop() || 'download'; link.textContent = '下载文件'; content.appendChild(link); } } catch (e) { if (generation === state.previewGeneration && id === state.selected) { $('file-preview-content').textContent = '无法读取文件，请重试。'; error(e); } }
+  }
+  async function select(id) {
+    if (!state.tickets.some(t => t.id === id)) return;
+    ++state.previewGeneration; $('file-preview').hidden = true;
+    saveDraft(); const generation = ++state.detailGeneration; state.selected = id; state.detail = null; state.progress = null; state.events = []; state.files = null;
+    const draft = state.drafts[id] || {}; $('answer').value = draft.answer || ''; $('note').value = draft.note || ''; $('selected-content').hidden = true; $('detail').textContent = '正在读取任务详情…'; controls(); renderList();
+    const base = 'tickets/' + encodeURIComponent(id);
+    const results = await Promise.allSettled([api(base), api(base + '/progress'), api(base + '/events?limit=100'), api(base + '/files')]);
+    if (generation !== state.detailGeneration || id !== state.selected) return;
+    if (results[0].status === 'rejected') { error(results[0].reason); $('detail').textContent = '详情读取失败，请刷新重试。'; return; }
+    state.detail = results[0].value; state.progress = results[1].status === 'fulfilled' ? results[1].value : null; state.events = results[2].status === 'fulfilled' ? results[2].value.events || [] : []; state.files = results[3].status === 'fulfilled' ? results[3].value : null;
+    renderDetail();
+    const failed = results.slice(1).filter(r => r.status === 'rejected'); if (failed.length) error('部分进度、记录或文件暂时无法读取；已显示可用的信息。');
+  }
+  async function refresh() {
+    const generation = ++state.listGeneration; $('refresh').disabled = true;
+    try {
+      const data = await api('tickets?state=all&limit=200'); if (generation !== state.listGeneration) return;
+      if (!Array.isArray(data.tickets)) throw Error('任务列表响应格式不正确');
+      state.tickets = data.tickets; renderList();
+      const wanted = state.selected || new URLSearchParams(location.search).get('ticket');
+      const id = state.tickets.find(t => t.id === wanted)?.id || state.tickets[0]?.id;
+      if (wanted && !state.tickets.some(t => t.id === wanted)) error('指定任务不在当前列表中，已显示可用任务。');
+      if (id) await select(id);
+      else { ++state.detailGeneration; state.detail = null; state.selected = null; $('selected-content').hidden = true; $('detail').textContent = '还没有任务。进入对话开始交代工作吧。'; }
+    } catch (e) { if (generation === state.listGeneration) { error('任务列表读取失败，保留上次内容。' + (e?.message || String(e))); if (!state.tickets.length) $('list').textContent = '无法读取任务，请使用刷新重试。'; } }
+    finally { if (generation === state.listGeneration) $('refresh').disabled = false; }
+  }
+  async function act(kind) {
+    const id = state.selected, t = state.detail; if (!t || state.pending.has(id)) return;
+    if (t.recovery && ['answer','note'].includes(kind)) return;
+    if (kind === 'retry' && !retryable(t) || kind === 'answer' && !t.waitingForAnswer || ['answer','note','stop'].includes(kind) && ended(t)) return;
+    const input = kind === 'answer' ? $('answer') : kind === 'note' ? $('note') : null;
+    if (input && !input.value.trim()) { error('请先写下要发送的内容。'); return; }
+    if (kind === 'dismiss' && (!t.recovery || ended(t))) return;
+    if (kind === 'dismiss' && !window.confirm('只从 Ordin 任务列表移除，并保留记录和文件。这不会停止或确认停止外部执行端。确定移除吗？')) return;
+    if (kind === 'stop' && !window.confirm('这会提交停止请求。请求排队不代表执行已经停止，需等待执行端确认。确定请求停止吗？')) return;
+    saveDraft(); const text = input?.value; state.pending.add(id); controls();
+    try {
+      await api('tickets/' + encodeURIComponent(id) + '/' + kind, kind === 'stop' ? { reason: '用户从任务工作台请求停止' } : input ? { text } : {});
+      if (kind === 'dismiss') { delete state.notices[id]; await refresh(); return; }
+      if (input) { state.drafts[id][kind] = ''; if (state.selected === id) input.value = ''; }
+      state.notices[id] = { stopping: kind === 'stop', text: kind === 'stop' ? '停止请求已排队；尚未确认停止，请刷新查看执行端确认。' : kind === 'retry' ? '重试请求已提交，等待新进展。' : '内容已提交，等待任务处理。' };
+      if (state.selected === id) { if (kind === 'stop') renderDetail(); else await select(id); }
+    } catch (e) { if (state.selected === id) error(e); }
+    finally { state.pending.delete(id); if (state.selected === id) controls(); }
+  }
+  async function setup() {
+    const results = await Promise.allSettled([api('model/config'), api('execution/status')]);
+    const model = results[0].status === 'fulfilled' ? results[0].value : null;
+    const execution = results[1].status === 'fulfilled' ? results[1].value : null;
+    const modelText = model ? (model.defaultModel ? '模型：' + model.defaultModel : '尚未选择模型') + (model.configuredKey === true || model.configured === true ? ' · 已配置凭据' : ' · 凭据未确认') : '模型配置暂时无法确认';
+    const health = execution?.health;
+    $('health').textContent = modelText + '\n' + (health ? (execution.selected || '执行端') + '：' + (health.ok === true ? '检查通过' : '检查未通过') + (health.version ? ' · ' + health.version : '') + (health.checkedAt ? ' · ' + health.checkedAt : '') + (health.problems?.length ? ' · ' + health.problems.join('；') : '') + (health.warnings?.length ? ' · 提醒：' + health.warnings.join('；') : '') : '执行状态暂时无法确认（尚无检查结果）');
+  }
+  function bind() {
+    $('search').oninput = renderList;
+    for (const button of $('tabs').children) button.onclick = () => { state.filter = button.dataset.state; for (const other of $('tabs').children) other.setAttribute('aria-selected', String(other === button)); renderList(); };
+    $('refresh').onclick = refresh;
+    $('answer').oninput = saveDraft; $('note').oninput = saveDraft;
+    $('file-preview-close').onclick = () => { ++state.previewGeneration; $('file-preview').hidden = true; $('file-preview-content').textContent = ''; };
+    $('answer-send').onclick = () => act('answer'); $('note-send').onclick = () => act('note'); $('stop').onclick = () => act('stop'); $('dismiss').onclick = () => act('dismiss'); $('retry').onclick = () => act('retry');
+    $('continue').onclick = () => { if (state.detail && !$('continue').disabled) window.parent.postMessage({ type: 'ordin:continue-task', ticketId: state.selected }, location.origin); };
+  }
+  const ready = (async () => { bind(); await Promise.all([setup(), refresh()]); })();
+  window.Workspace = { init: () => ready, refresh, select };
+})();
+</script>
+</body></html>

@@ -1,0 +1,34 @@
+import { createServer, type ServerResponse } from 'node:http'
+import { describe, expect, it } from 'vitest'
+import { DshServiceDriver } from '../src/drivers/dsh-service.ts'
+const spec=(over:Record<string,unknown>={})=>({ticketId:'t1',assignmentId:'a1',cwd:'/tmp/ordin-task-test',prompt:'do work',access:'full' as const,...over})
+async function fixture(mode='ok') {
+ const calls:any[]=[];let count=0,cancelled=false
+ const events=[{type:'event',event:{type:'agent/inbox/spliced',seq:10,data:{inserted:[]}}},{type:'event',event:{type:'turn/start',seq:11,data:{turn:2}}},{type:'event',event:{type:'assistant/message',seq:12,data:{turn:2,message:{content:[{type:'text',text:'done'}]}}}},{type:'event',event:{type:'turn/end',seq:13,data:{turn:2,reason:{kind:mode==='error'?'error':'completed',error:{message:'DSH task error'}}}}}]
+ const send=(res:ServerResponse,rpcId:string,value:any)=>{res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({type:'server-response',rpcId,result:{ok:true,value}}))}
+ const server=createServer(async(req,res)=>{let text='';for await(const c of req)text+=c;const b=text?JSON.parse(text):{};calls.push({url:req.url,body:b,headers:req.headers})
+ if(req.url?.startsWith('/connect')) {if(mode==='auth'){res.writeHead(401);res.end();return}res.writeHead(302,{'set-cookie':'DSH_API=test; Path=/'});res.end();return}
+ const q=b.payload?.args?.request, m=b.method?.split('/')[1]
+ if(req.headers.cookie!=='DSH_API=test'){res.writeHead(401);res.end();return}
+ if(m==='list'){if(Object.keys(b.payload.args).join(',')!=='_request'){res.writeHead(400);res.end();return}return send(res,b.rpcId,{items:[]})}
+ if(m==='create')return send(res,b.rpcId,{sessionId:'s1'})
+ if(m==='state')return send(res,b.rpcId,{cursor:9,running:false,queue:[],pendingInput:[]})
+ if(m==='prompt'){(events[0]!.event.data as any)={inserted:[{source:{kind:'user',rpcId:mode==='uncorrelated'?'another-request':q.requestId}}]};(events[0]!.event.type='agent/inbox/spliced');return send(res,b.rpcId,{accepted:true})}
+ if(m==='cancel'){if(mode==='cancel-error'){res.writeHead(500);res.end();return}cancelled=true;return send(res,b.rpcId,{accepted:true})}
+ if(m==='wait'){count++;return send(res,b.rpcId,{reason:mode==='input'?'input-required':(mode==='timeout'||mode.startsWith('cancel'))&&!cancelled?'timeout':'idle',state:{cursor:13,running:mode==='cancel-running'||((mode==='timeout'||mode.startsWith('cancel'))&&!cancelled),queue:[],pendingInput:mode==='input'?['approval']:[]},output:{records:events,truncated:false}})}
+ if(m==='events'){if(q?.address?.kind!=='session'||q?.address?.sessionId!=='s1'||q?.throughSeq!==13){res.writeHead(400);res.end();return}return send(res,b.rpcId,{records:mode==='stale'?events.map(r=>({...r,event:{...r.event,seq:1}})):events,hasMore:false,cursor:13})}
+ res.writeHead(404);res.end()
+ })
+ await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));const baseUrl='http://127.0.0.1:'+(server.address() as any).port
+ return {calls,driver:new DshServiceDriver({baseUrl,token:'test-token',timeoutMs:100}),baseUrl,close:()=>new Promise<void>(r=>{server.closeAllConnections();server.close(()=>r())})}
+}
+describe('DSH service task wire',()=>{
+ it('uses exact task envelopes and DSH default model, returning completed only on turn receipt',async()=>{const f=await fixture();try{const t=await f.driver.launch(await f.driver.prepare(spec()));const events=[];for await(const e of t.events)events.push(e);expect(await t.done).toMatchObject({status:'completed',text:'done'});expect(events[0]).toMatchObject({kind:'started',session:{id:expect.stringContaining('service:')}});expect(events.at(-1)?.kind).toBe('final');const prompt=f.calls.find(c=>c.body.method==='session/prompt').body.payload.args.request;expect(prompt).toMatchObject({sessionId:'s1',requestId:expect.stringMatching(/^ordin-/),content:[{type:'text',text:'do work'}]});expect(JSON.stringify(f.calls.map(c=>c.body))).not.toMatch(/provider|apiKey|model|selectModel/);expect(f.calls.find(c=>c.body.method==='session/wait').body.payload.args.request.afterSeq).toBe(9)}finally{await f.close()}})
+ it.each(['error','input','stale','uncorrelated'])('never promotes %s to completed',async(mode)=>{const f=await fixture(mode);try{const t=await f.driver.launch(await f.driver.prepare(spec()));expect((await t.done).status).toBe('failed')}finally{await f.close()}})
+ it('probe only checks authenticated task capability; missing authentication is visible',async()=>{const f=await fixture('auth');try{expect(await f.driver.probe()).toMatchObject({ok:false,problems:[expect.stringContaining('401')]});expect(f.calls).toHaveLength(1)}finally{await f.close()}})
+ it('rejects unsafe URLs, permission downgrades, and foreign CLI/endpoint session adoption',async()=>{expect(()=>new DshServiceDriver({baseUrl:'http://example.com',token:'x'})).toThrow(/HTTPS/);expect(()=>new DshServiceDriver({baseUrl:'http://x:secret@localhost',token:'x'})).toThrow();const f=await fixture();try{await expect(f.driver.prepare(spec({access:'edit'}))).rejects.toThrow(/permissions/);await expect(f.driver.prepare(spec({model:'other'}))).rejects.toThrow(/model/);await expect(f.driver.prepare(spec(),{backend:'dsh',id:'cli',cwd:spec().cwd,savedAt:''})).rejects.toThrow(/adoption/)}finally{await f.close()}})
+ it('resumes only its own service session without creating another, and uses a new assignment request ID',async()=>{const f=await fixture();try{const first=await f.driver.launch(await f.driver.prepare(spec()));const session=(await first.done).session!;const next=spec({assignmentId:'a2'});const t=await f.driver.resume(session,await f.driver.prepare(next,session));await t.done;expect(f.calls.filter(c=>c.body.method==='session/create')).toHaveLength(1);const ids=f.calls.filter(c=>c.body.method==='session/prompt').map(c=>c.body.payload.args.request.requestId);expect(ids[0]).not.toBe(ids[1])}finally{await f.close()}})
+ it('deadline requests cancellation and confirms idle before returning timeout',async()=>{const f=await fixture('timeout');try{const t=await f.driver.launch(await f.driver.prepare(spec()));expect(await t.done).toMatchObject({status:'failed',error:{code:'timeout'}});expect(f.calls.some(c=>c.body.method==='session/cancel')).toBe(true)}finally{await f.close()}})
+ it('rejects a cancellation acknowledgement while the task is still running',async()=>{const f=await fixture('cancel-running');try{const t=await f.driver.launch(await f.driver.prepare(spec()));await expect(t.cancel('stop')).rejects.toThrow(/not confirmed/);expect((await t.done).status).toBe('failed')}finally{await f.close()}})
+ it('does not swallow failed cancellation or report stopped',async()=>{const f=await fixture('cancel-error');try{const t=await f.driver.launch(await f.driver.prepare(spec()));await expect(t.cancel('stop')).rejects.toThrow(/500/);expect((await t.done).status).toBe('failed')}finally{await f.close()}})
+})
