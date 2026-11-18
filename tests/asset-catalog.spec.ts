@@ -25,6 +25,26 @@ async function fixture() {
 }
 const input = { text: 'hello catalog', name: 'Notes', description: 'operator notes', kind: 'document', tags: ['local'], mimeType: 'text/plain', contentKind: 'text' }
 describe('F2-B2 asset catalog real Runtime HTTP', () => {
+  it('returns same-task provenance and explicit pinned-reference records without claiming use', async()=>{
+    const f=await fixture();try{
+      const source=await f.request('assets/import','POST',input);const id=f.runtime.engine.createTicket({title:'Reference consumer',text:'use asset'}).ticketId!;
+      const t=f.runtime.store.tickets.get(id)!;f.runtime.store.tickets.save({...t,assetRefs:[{id:source.data.id,revision:1,contentHash:source.data.contentHash}]});
+      const relations=await f.request('assets/'+source.data.id+'/relations');expect(relations.status).toBe(200);
+      expect(relations.data).toMatchObject({related:[],references:[{ticketId:id,title:'Reference consumer',revision:1,state:'selected',reason:expect.stringContaining('不代表')} ]});
+      expect((await f.request('assets/not-here/relations')).status).toBe(404);
+      const now=new Date().toISOString();
+      const shared=f.runtime.engine.createTicket({title:'Shared source',text:'source'}).ticketId!;
+      const sharedTicket=f.runtime.store.tickets.get(shared)!; f.runtime.store.tickets.save({...sharedTicket,id:'shared-source'} as any);
+      for(const [aid,owner] of [['sibling','default'],['foreign-sibling','other']]) f.runtime.store.assets.save({id:aid,name:aid,kind:'report',ownerProfileId:owner,storageVersion:1,storage:{kind:'managed-object'},source:{ticketId:'shared-source'},createdAt:now,updatedAt:now} as any);
+      const base=f.runtime.store.assets.get(source.data.id)!;f.runtime.store.assets.save({...base,source:{ticketId:'shared-source'}} as any);
+      const related=await f.request('assets/'+source.data.id+'/relations');
+      expect(related.data.related.map((row:any)=>row.id)).toEqual(['sibling']);
+      f.runtime.store.conversations.save({id:'foreign-conversation',profileId:'other',createdAt:now,lastMessageAt:now});
+      f.runtime.store.tickets.save({...t,conversationId:'foreign-conversation',assetRefs:[{id:source.data.id,revision:1,contentHash:source.data.contentHash}]});
+      expect((await f.request('assets/'+source.data.id+'/relations')).data.references).toEqual([]);
+      expect((await f.request('assets/foreign-sibling/relations')).status).toBe(403);
+    }finally{await f.close()}
+  })
   it('serves independent delivered bytes after source task deletion and rejects foreign owners and corrupted content', async()=>{
     const f=await fixture();try{
       const id=f.runtime.engine.createTicket({title:'Producer',text:'work'}).ticketId!;

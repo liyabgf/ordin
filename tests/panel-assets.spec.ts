@@ -114,10 +114,11 @@ function fixture() {
   };
   const fetch = vi.fn(async (url, opt = {}) => {
     calls.push([url, opt]);
+    if (url.endsWith("/relations")) return response({related:[{id:"a2",name:"Beta",reason:"同一任务产出"}],references:[{ticketId:"t1",title:"Task one",revision:2,state:"selected",reason:"已选择，不表示已读取"}]});
     if (url.includes("/content")) return response(content);
     if (url.includes("/assets?")) return response({ assets });
     if (url.endsWith("/assets/import")) return response(assets[0]);
-    const a = assets.find((a) => url.endsWith("/assets/" + a.id));
+    const a = assets.find((a) => url === "/ordin/api/assets/" + a.id);
     if (!a) throw Error("unexpected " + url);
     if (opt.method === "PATCH") {
       Object.assign(a, JSON.parse(opt.body), { revision: a.revision + 1 });
@@ -181,6 +182,17 @@ function fixture() {
   };
 }
 describe("asset library actual JavaScript", () => {
+  it("renders and navigates explicit relations, labels selection honestly and tolerates relation-only failures", async()=>{
+    const f=fixture();await f.api.init();await f.api.select("a1");
+    const related=f.nodes.detail.children[0];
+    expect(related.children[0].textContent).toContain("同一任务产出");
+    expect(f.nodes.detail.children[1].children[1].textContent).toContain("尚不能据此确认执行端已读取");
+    await related.children[0].onclick();expect(f.api.state.selected).toBe("a2");
+    const original=f.fetch.getMockImplementation();f.fetch.mockImplementation(async(url,opt)=>url.endsWith("/relations")?response({error:"relation offline"},false):original(url,opt));
+    await f.api.select("a1");expect(f.api.state.detail.id).toBe("a1");
+    expect(f.nodes.detail.children[0].children[0].textContent).toContain("关系暂不可用：relation offline");
+    await f.nodes["load-content"].onclick();expect(f.nodes.preview.hidden).toBe(false);
+  });
   it("opens a list asset preview and reports legacy unmanaged errors honestly", async () => {
     const f = fixture();
     f.assets[0].managed = false;

@@ -454,6 +454,7 @@ function table(host: HttpHost): readonly Route[] {
     route('GET', 'assets', ({ query }) => { if (!host.assets) throw new RouteError(501, 'Asset catalog is not wired'); return { assets: host.assets.list(query) } }),
     route('GET', 'assets/:id/content', ({ params }) => { if (!host.assets) throw new RouteError(501, 'Asset catalog is not wired'); return host.assets.content(params.id!) }),
     route('GET', 'assets/:id', ({ params }) => { if (!host.assets) throw new RouteError(501, 'Asset catalog is not wired'); return host.assets.get(params.id!) }),
+    route('GET', 'assets/:id/relations', ({ params }) => { if (!host.assets) throw new RouteError(501, 'Asset catalog is not wired'); return host.assets.relations(params.id!) }),
     route('GET', 'assets/:id/revisions', ({ params }) => { if (!host.assets) throw new RouteError(501, 'Asset catalog is not wired'); return { revisions: host.assets.revisions(params.id!) } }),
     route('POST', 'assets/import', async ({ body }) => { if (!host.assets) throw new RouteError(501, 'Asset catalog is not wired'); return host.assets.import(await body(6 * 1_048_576 + 16384)) }),
     route('PATCH', 'assets/:id', async ({ params, body }) => { if (!host.assets) throw new RouteError(501, 'Asset catalog is not wired'); return host.assets.patch(params.id!, await body()) }),

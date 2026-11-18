@@ -277,6 +277,19 @@ header{max-width:1240px;margin:auto;padding:28px 28px 18px}h1{font-size:26px;mar
             (a.archived ? "恢复" : "归档") +
             '</button><button id="load-content" class="btn">打开预览</button></div></div><div id="preview" class="preview section" hidden><div class="preview-head"><b id="preview-title"></b><button id="preview-close" class="btn" type="button">关闭预览</button></div><div id="preview-body"></div></div>';
           $("asset-source").replaceChildren(source);
+          const relationPanel = document.createElement("div");
+          relationPanel.id = "asset-relations";
+          relationPanel.className = "section";
+          relationPanel.innerHTML = '<b>相关资产</b>';
+          if (a.relations?.error) { const message = document.createElement("p"); message.className = "muted"; message.textContent = "关系暂不可用：" + a.relations.error; relationPanel.appendChild(message); }
+          const related = a.relations?.related || [];
+          if (!related.length) { const empty = document.createElement("p"); empty.className = "muted"; empty.textContent = "暂无来源关系；未推测语义相关性。"; relationPanel.appendChild(empty); }
+          for (const item of related) { const button = document.createElement("button"); button.type="button"; button.className="source-link"; button.textContent=String(item.name)+" · "+String(item.reason); button.onclick=()=>select(item.id); relationPanel.appendChild(button); }
+          const refs = a.relations?.references || [];
+          const refSection = document.createElement("div"); refSection.className="section"; const refTitle=document.createElement("b"); refTitle.textContent="任务引用记录"; refSection.appendChild(refTitle);
+          if (!refs.length) { const empty=document.createElement("p"); empty.className="muted"; empty.textContent="尚无固定版本的任务引用"; refSection.appendChild(empty); }
+          for (const ref of refs) { const row=document.createElement("p"); row.className="muted"; row.textContent=String(ref.title||ref.ticketId)+" · v"+String(ref.revision)+" · 已选择，尚不能据此确认执行端已读取"; refSection.appendChild(row); }
+          $("detail").appendChild(relationPanel); $("detail").appendChild(refSection);
           ["edit-name", "edit-description", "edit-tags"].forEach((id) => {
             $(id).oninput = rememberDraft;
           });
@@ -327,9 +340,9 @@ header{max-width:1240px;margin:auto;padding:28px 28px 18px}h1{font-size:26px;mar
           state.detail = null;
           $("detail").textContent = "正在读取资产详情…";
           try {
-            const d = await api("assets/" + encodeURIComponent(id));
+            const [d, relations] = await Promise.all([api("assets/" + encodeURIComponent(id)), api("assets/" + encodeURIComponent(id) + "/relations").catch(e => ({error: e?.message || String(e)}))]);
             if (generation !== state.detailGeneration) return;
-            state.detail = d;
+            state.detail = { ...d, relations };
             renderDetail();
             clearError();
           } catch (e) {

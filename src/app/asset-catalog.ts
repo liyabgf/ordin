@@ -92,6 +92,20 @@ export class AssetCatalog {
     const text = mimeType.startsWith('text/') || ['application/json','application/xml'].includes(mimeType)
     return { path: String(row.name), text, base64: bytes.toString('base64'), mimeType, size: bytes.length }
   }
+  /** Only explicit provenance and pinned references; no inferred use or semantic scores. */
+  relations(id: string): { related: Row[]; references: Row[] } {
+    const asset = this.require(id)
+    if (asset.deletedAt !== undefined || asset.deleted !== undefined) throw new AssetCatalogError(409, 'Asset is deleted')
+    const sourceId = record(asset.source).ticketId
+    const related = typeof sourceId === 'string' ? this.store.assets.list({ includeArchived: true, limit: 2_147_483_647 })
+      .filter(row => row.id !== id && row.deletedAt === undefined && row.deleted === undefined && this.access(row) && record(row.source).ticketId === sourceId)
+      .slice(0, 50).map(row => ({ id: row.id, name: row.name, revision: revision(row), kind: row.kind, reason: '同一任务产出' })) : []
+    const references = this.store.tickets.list()
+      .filter(ticket => ticket.deleted === undefined && (ticket.conversationId === undefined || this.store.conversations.get(ticket.conversationId)?.profileId === 'default'))
+      .flatMap(ticket => (ticket.assetRefs ?? []).filter(ref => ref.id === id).map(ref => ({ ticketId: ticket.id, title: ticket.title, revision: ref.revision, contentHash: ref.contentHash, state: 'selected', ended: ticket.ended !== undefined, reason: '任务选择了此版本；不代表已读取或使用成功' })))
+      .slice(0, 100)
+    return { related, references }
+  }
   get(id: string): Row { return this.view(this.require(id)) }
   revisions(id: string): Row[] { const row = this.require(id); return [...history(row), snapshot(row)].map(value => this.view(value)) }
   import(input: unknown): Row {
