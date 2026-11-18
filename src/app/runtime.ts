@@ -1,6 +1,7 @@
 import { ConversationIntake } from './conversation-intake.ts'
 import { Conversations } from './conversations.ts'
 import { SkillCandidates } from './skill-candidates.ts'
+import type { WorkerConnections } from './worker-connections.ts'
 import { AssetCatalog, AssetCatalogError } from './asset-catalog.ts'
 import { Memories } from './memories.ts'
 import { AssetRegistration, assetResultKey, type AssetRegistrationPayload } from './assets.ts'
@@ -55,7 +56,7 @@ import { deskLlmGenerate, type DeskLlmConfig } from '../desk/llm.ts'
 import { mainTools, workerTools, type ArtifactCatalogEntry, type ArtifactRead, type Tool, type ToolsHost } from './tools.ts'
 import { isTextFile, resolveInside, resolveRealInside } from './files.ts'
 import { ticketSummary } from './views.ts'
-import { BASE_PATH, serve, type HttpHost, type Serving, type WorkerProgress } from './http.ts'
+import { BASE_PATH, executionFingerprint, serve, type HttpHost, type Serving, type WorkerProgress } from './http.ts'
 
 /** How often the pump runs what is due, in milliseconds. */
 /**
@@ -180,12 +181,23 @@ export class Runtime implements HttpHost {
   private httpServing?: Serving
   private started = false
   private readonly driver: WorkerDriver
+  readonly workerConnections?: WorkerConnections
+
+  async saveWorkerConnection(backend: BackendKind, input: unknown) {
+    if (!this.workerConnections) throw Error("执行端连接设置不可用")
+    return this.runOperation(async () => {
+      const view = await this.workerConnections!.testAndSave(backend, input)
+      this.backendCheckVersions.set(backend, (this.backendCheckVersions.get(backend) ?? 0) + 1)
+      this.backendChecks.delete(backend)
+      return view
+    })
+  }
   private readonly backendChecks = new Map<BackendKind, DriverHealth>()
   private readonly backendCheckVersions = new Map<BackendKind, number>()
 
-  executionStatus(): { selected: BackendKind; health: DriverHealth | null } {
+  executionStatus(): { selected: BackendKind; health: DriverHealth | null; connectionId?: string } {
     const selected = this.settings().executor.backend
-    return { selected, health: this.backendChecks.get(selected) ?? null }
+    return { selected, health: this.backendChecks.get(selected) ?? null, connectionId: this.workerConnections?.connectionId(selected) }
   }
 
   checkExecution(): Promise<DriverHealth> {
@@ -442,9 +454,10 @@ export class Runtime implements HttpHost {
     forget: (_agent: unknown): void => {},
   }
 
-  constructor(boot: Boot, options: { readonly logger: Logger; readonly driver: WorkerDriver; readonly proc: ProcessRegistry; readonly notifier?: string | null; readonly fetchFn?: typeof fetch; readonly acceptanceEnabled?: boolean }) {
+  constructor(boot: Boot, options: { readonly logger: Logger; readonly driver: WorkerDriver; readonly proc: ProcessRegistry; readonly notifier?: string | null; readonly fetchFn?: typeof fetch; readonly acceptanceEnabled?: boolean; readonly connections?: WorkerConnections }) {
     this.context = { logger: options.logger }
     this.driver = options.driver
+    if (options.connections) this.workerConnections = options.connections
     this.bootstrap = boot
     this.proc = options.proc
     this.lifetime = boot.lifetime
@@ -1226,12 +1239,33 @@ export class Runtime implements HttpHost {
     if (ticket === undefined) throw new UserError('ticket_missing', { ticketId })
     const assignment = latestAssignment(ticket)
     const session = this.workerSessions.get(ticketId)
+    const attempt = ticket.executionAttempt?.assignmentId === assignment?.id ? ticket.executionAttempt : undefined
+    const sameAssignment = assignment === undefined ? [] : this.store.events.list(ticketId).filter(event =>
+      event.detail?.assignmentId === assignment.id && ['worker_phase', 'worker_text', 'worker_tool', 'worker_usage'].includes(event.type))
+    const legacy = attempt === undefined || (attempt.phase !== 'intent' && !sameAssignment.some(event => event.detail?.attemptId !== undefined)
+      && (ticket.usage?.attempts.filter(item => item.assignmentId === assignment?.id).length ?? 0) <= 1)
+    const journal = sameAssignment.filter(event => event.detail?.attemptId === undefined
+      ? legacy || event.detail?.phase === 'operator-reconciliation'
+      : event.detail.attemptId === attempt?.token)
+    const last = journal.at(-1)
+    const lastText = journal.findLast(event => event.type === 'worker_text')?.detail?.text
+    const recentTools = journal.filter(event => event.type === 'worker_tool').slice(-8).flatMap(event =>
+      typeof event.detail?.name === 'string' ? [{ name: event.detail.name, at: event.at }] : [])
+    const owner = journal.findLast(event => ['dsh', 'codex', 'claude'].includes(String(event.detail?.backend)))?.detail
+    const executionState = ticket.ended || assignment?.state === 'ended' ? 'ended' : ticket.recovery ? 'recovery'
+      : ticket.attention || waitsForPerson(ticket) ? 'waiting' : assignment?.state === 'running' ? 'running' : 'pending'
     return {
       sessionId: session?.id ?? ticket.execution?.sessionId ?? '',
-      ...(ticket.recovery === undefined ? {} : { agentStatus: 'waiting', lastSaid: ticket.recovery.reason }),
       sessionTitle: session?.backend ?? '',
-      loaded: false,
-      recentTools: [],
+      ...(ticket.recovery === undefined ? { ...(assignment === undefined ? {} : { agentStatus: assignment.state }), ...(typeof lastText === 'string' ? { lastSaid: lastText } : {}) } : { agentStatus: 'waiting', lastSaid: ticket.recovery.reason }),
+      executionState,
+      executionFingerprint: executionFingerprint(attempt?.token),
+      loaded: last !== undefined,
+      ...(last === undefined ? {} : { lastEventAt: last.at, lastEvent: { type: last.type,
+        ...(last.type === 'worker_phase' && typeof last.detail?.phase === 'string' ? { phase: last.detail.phase } : {}) } }),
+      ...(owner === undefined ? {} : { backend: String(owner.backend),
+        ...(typeof owner.connectionId === 'string' && /^[0-9a-f-]{36}$/.test(owner.connectionId) ? { connectionId: owner.connectionId } : {}) }),
+      recentTools,
       ...(assignment === undefined ? {} : { assignment: { id: assignment.id, state: assignment.state, ...(assignment.startedAt === undefined ? {} : { startedAt: assignment.startedAt }), ...(assignment.deliveredAt === undefined ? {} : { deliveredAt: assignment.deliveredAt }), ...(assignment.deliveryError === undefined ? {} : { deliveryError: assignment.deliveryError }) } }),
     }
   }
@@ -1732,7 +1766,7 @@ export class Runtime implements HttpHost {
 }
 
 /** Build a Runtime on top of a Boot infrastructure instance. */
-export function createRuntime(boot: Boot, options: { readonly logger: Logger; readonly driver: WorkerDriver; readonly proc: ProcessRegistry; readonly notifier?: string | null; readonly fetchFn?: typeof fetch; readonly acceptanceEnabled?: boolean }): Runtime {
+export function createRuntime(boot: Boot, options: { readonly logger: Logger; readonly driver: WorkerDriver; readonly proc: ProcessRegistry; readonly notifier?: string | null; readonly fetchFn?: typeof fetch; readonly acceptanceEnabled?: boolean; readonly connections?: WorkerConnections }): Runtime {
   return new Runtime(boot, options)
 }
 

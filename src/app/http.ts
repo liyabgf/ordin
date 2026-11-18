@@ -15,6 +15,7 @@ import { AssetCatalog, AssetCatalogError } from './asset-catalog.ts'
  *
  * 管理请求必须同源：Host 头必须指向本机 loopback 的实际端口，且携带标记头；Origin（若带）必须是同源。
  */
+import { createHash } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { lstat } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
@@ -98,7 +99,12 @@ export interface Recipe {
 }
 
 /** 面板轮询一张 Ticket 时读到的进度；形状随 ordin runtime.ts:161-202。 */
+export function executionFingerprint(token?: string): string | undefined {
+  return token === undefined ? undefined : createHash('sha256').update(token).digest('hex')
+}
+
 export interface WorkerProgress {
+  readonly executionFingerprint?: string
   readonly sessionId: string
   readonly sessionTitle: string
   readonly loaded: boolean
@@ -106,6 +112,10 @@ export interface WorkerProgress {
   readonly turn?: number
   readonly lastSaid?: string
   readonly lastEventAt?: string
+  readonly lastEvent?: { readonly type: string; readonly phase?: string }
+  readonly executionState?: 'pending' | 'running' | 'waiting' | 'recovery' | 'ended'
+  readonly backend?: string
+  readonly connectionId?: string
   readonly recentTools: readonly { readonly name: string; readonly at?: string }[]
   readonly usage?: {
     readonly inputTokens: number
@@ -143,6 +153,8 @@ export interface HttpHost {
   raiseDecision(title: string, detail: string, source: string): string
   readonly store: Store
   readonly assets?: AssetCatalog
+  readonly workerConnections?: Pick<import("./worker-connections.ts").WorkerConnections, "view">
+  saveWorkerConnection?(backend: import("../drivers/types.ts").BackendKind, input: unknown): Promise<unknown>
   suggestAssetDescription?(id: string, expectedRevision: number): Promise<{ description: string; revision: number; model: string; generatedAt: string }>
   readonly memories?: Memories
   readonly health: HealthBoard
@@ -505,6 +517,7 @@ function table(host: HttpHost): readonly Route[] {
       const ticket = host.engine.require(params.id!)
       return {
         ...ticketView(ticket),
+        executionFingerprint: executionFingerprint(ticket.executionAttempt?.assignmentId === ticket.assignments.at(-1)?.id ? ticket.executionAttempt?.token : undefined),
         // What the worker claimed it produced, one entry per normalized path, with the report that claimed it. The
         // files route answers "what is on disk right now"; this answers "what did this Ticket say it made".
         artifacts: host.artifacts(params.id!),
@@ -600,7 +613,11 @@ function table(host: HttpHost): readonly Route[] {
       // the facts occurred in and the order seq counts them.
       const limit = Number(query.get('limit') ?? '200')
       const clipped = Number.isFinite(limit) && limit > 0 ? events.slice(-limit) : events
-      return { count: events.length, returned: clipped.length, events: [...clipped].reverse() }
+      return { count: events.length, returned: clipped.length, events: [...clipped].reverse().map(event => {
+        if (!event.type.startsWith('worker_') || event.detail === undefined) return event
+        const { attemptId: _internalAttempt, ...detail } = event.detail
+        return { ...event, detail }
+      }) }
     }),
     route('GET', 'tickets/:id/dependencies', ({ params }) => ({
       // What it waits for, what waits for it, and which of the former are still unsatisfied.
@@ -821,6 +838,18 @@ function table(host: HttpHost): readonly Route[] {
       if (!host.listModels) throw new RouteError(501, 'Model list is not wired')
       try { return await host.listModels(await body()) }
       catch (error) { throw new RouteError(400, error instanceof Error ? error.message : 'Model list failed') }
+    }),
+    route('GET', 'execution/connections', () => {
+      if (!host.workerConnections) throw new RouteError(501, '执行端连接设置不可用')
+      return host.workerConnections.view()
+    }),
+    route('PUT', 'execution/connections/:backend', async ({ params, body }) => {
+      if (!host.saveWorkerConnection || !host.workerConnections) throw new RouteError(501, '执行端连接设置不可用')
+      const backend = params.backend
+      if (backend !== 'dsh' && backend !== 'codex' && backend !== 'claude') throw new RouteError(404, '未知执行端')
+      const input = await body(8192)
+      try { return await host.saveWorkerConnection(backend, input) }
+      catch (error) { throw new RouteError(400, error instanceof Error ? error.message : '连接未保存') }
     }),
     route('GET', 'execution/status', () => {
       if (host.executionStatus === undefined) throw new RouteError(501, 'Execution status is not wired')

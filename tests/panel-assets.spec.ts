@@ -213,7 +213,7 @@ describe("asset library actual JavaScript", () => {
     expect(f.window.parent.postMessage).toHaveBeenCalledWith({type:'ordin:navigate',tab:'workspace',ticketId:'t1'},'http://ordin.test');
     const related=f.nodes.detail.children[0];
     expect(related.children[0].textContent).toContain("同一任务产出");
-    expect(f.nodes.detail.children[1].children[1].textContent).toContain("尚不能据此确认执行端已读取");
+    expect(f.nodes.detail.children[1].children[1].textContent).toContain("任务已关联此固定版本");
     await related.children[0].onclick();expect(f.api.state.selected).toBe("a2");
     const fetchBeforeReceipt = f.fetch.getMockImplementation();
     f.fetch.mockImplementation(async (url, opt) => url.endsWith("/relations") ? response({references:[{title:"Consumer",revision:1,state:"queued",reason:"已保存待投递"},{title:"Consumer",revision:1,state:"delivered",reason:"已送达执行端；不代表已读取或使用成功"},{title:"Consumer",revision:1,state:"not-delivered",reason:"任务结束时尚未送达"}]}) : fetchBeforeReceipt(url,opt));
@@ -254,6 +254,43 @@ describe("asset library actual JavaScript", () => {
     await f.nodes.query.oninput();
     expect(f.calls.at(-1)[0]).toContain("query=Beta");
     expect(f.nodes.list.children).toHaveLength(1);
+  });
+  it("shows honest lifecycle states and folds technical hash details", async () => {
+    const f = fixture();
+    f.assets.push({ ...asset("a3", "Archived"), archived: true, contentHash: "sha256-secret" });
+    f.assets[0].contentHash = "stored-hash";
+    f.assets.push({ ...asset("a4", "Unknown"), status: "other" });
+    await f.api.init();
+    expect(f.nodes.list.children[0].innerHTML).toContain("可用");
+    expect(f.nodes.list.children[1].innerHTML).toContain("待确认");
+    expect(f.nodes.list.children[3].innerHTML).toContain("状态未知");
+    await f.api.select("a1");
+    f.nodes.detail.children.find(el => el.id === "use-in-new-task").onclick();
+    expect(f.window.parent.postMessage).toHaveBeenCalledWith({
+      type: "ordin:use-asset", assetRef: { id: "a1", revision: 2, contentHash: "stored-hash" },
+    }, "http://ordin.test");
+    expect(f.nodes.list.children[2].innerHTML).toContain("已归档");
+    await f.api.select("a3");
+    expect(f.nodes.detail.innerHTML).toMatch(/<details class="section"><summary>技术信息（版本、格式与完整性）<\/summary>.*版本：2.*sha256-secret.*<\/details>/);
+    expect(f.nodes.list.children[2].innerHTML).not.toContain("sha256-secret");
+    expect(f.nodes.detail.innerHTML).not.toContain("已读取");
+  });
+  it("shows uncertain write result without retrying", async () => {
+    const f = fixture();
+    await f.api.init();
+    await f.api.select("a1");
+    const before = f.fetch.mock.calls.length;
+    f.fetch.mockImplementationOnce(async () => { throw new TypeError("network down"); });
+    await f.nodes["save-meta"].onclick();
+    expect(f.nodes["write-warning"].textContent).toContain("结果不确定");
+    expect(f.nodes["save-meta"].disabled).toBe(true);
+    await f.nodes["save-meta"].onclick();
+    expect(f.fetch.mock.calls.length).toBe(before + 1);
+    expect(f.fetch.mock.calls.slice(before).filter(([, options]) => options?.method === "PATCH")).toHaveLength(1);
+    await f.nodes.refresh.onclick();
+    expect(f.nodes["write-warning"].textContent).toContain("已读取当前状态");
+    expect(f.nodes["save-meta"].disabled).toBe(false);
+    expect(f.fetch.mock.calls.slice(before + 1).every(([, options]) => !options?.method)).toBe(true);
   });
   it("shows safe UTF-8 text and closes the preview", async () => {
     const f = fixture();
@@ -307,8 +344,9 @@ describe("asset library actual JavaScript", () => {
       { type: "ordin:navigate", tab: "workspace", ticketId: "t-1" },
       "http://ordin.test",
     );
-    expect(f.nodes.detail.innerHTML).toContain("候选");
-    expect(f.nodes.detail.innerHTML).toContain("尚未表示验收通过");
+    expect(f.nodes.detail.innerHTML).toContain("待确认");
+    expect(f.nodes.detail.innerHTML).toContain("尚未验收通过");
+    expect(f.nodes.detail.children.map(n => n.textContent).join(" ")).toContain("此资产目前不能用于新任务草稿。");
     expect(f.calls.every(([, o]) => !o.method)).toBe(true);
     f.assets[1].source.availability = "deleted";
     await f.api.select("a2");

@@ -5,9 +5,19 @@ import { TurnChannel } from './channel.ts'
 import { parseWorkerReport } from './report.ts'
 import { failedResult, type BackendSession, type DriverHealth, type LaunchSpec, type RunningTurn, type WorkerDriver, type WorkerSpec, type TurnResult } from './types.ts'
 
-export interface DshServiceDriverOptions { readonly baseUrl: string; readonly token: string; readonly timeoutMs?: number }
+export interface DshServiceDriverOptions { readonly baseUrl: string; readonly token: string; readonly timeoutMs?: number; readonly useServiceSettings?: boolean }
 type State = { cursor:number; running:boolean; queue:unknown[]|null; pendingInput:unknown[] }
 type Event = { type:string; seq:number; data:any }
+function taskStart(events:Event[],requestId:string):Event|undefined {
+  const input=events.find(e=>e.type==='user/message'&&e.data?.source?.rpcId===requestId)
+    ??events.find(e=>e.type==='agent/inbox/spliced'&&Array.isArray(e.data?.inserted)&&e.data.inserted.some((m:any)=>m?.source?.rpcId===requestId))
+  if(!input)return undefined
+  return input.type==='agent/inbox/spliced'?events.find(e=>e.type==='turn/start'&&e.seq>input.seq):events.filter(e=>e.type==='turn/start'&&e.seq<input.seq).at(-1)
+}
+function assistantText(event: Event): string {
+  const content = event.data?.message?.content
+  return Array.isArray(content) ? content.filter((b:any) => b?.type === 'text' && typeof b.text === 'string').map((b:any) => b.text).join('') : ''
+}
 export class DshServiceDriver implements WorkerDriver {
   readonly backend = 'dsh' as const
   private readonly base:string
@@ -55,8 +65,8 @@ export class DshServiceDriver implements WorkerDriver {
     catch(e){return {backend:'dsh',ok:false,checkedAt,binary:this.base,auth:'unknown',problems:[this.message(e)]}}
   }
   async prepare(spec:WorkerSpec,session?:BackendSession):Promise<LaunchSpec> {
-    if(spec.access!=='full')throw Error('DSH service cannot guarantee per-task read/edit permissions; no permission downgrade performed')
-    if(spec.model?.trim() || spec.effort?.trim())throw Error('DSH service owns its model selection; remove Ordin Worker model override')
+    if(!this.options.useServiceSettings && spec.access!=='full')throw Error('DSH service cannot guarantee per-task read/edit permissions; no permission downgrade performed')
+    if(!this.options.useServiceSettings && (spec.model?.trim() || spec.effort?.trim()))throw Error('DSH service owns its model selection; remove Ordin Worker model override')
     if(!isAbsolute(spec.cwd)||!spec.prompt.trim())throw Error('Absolute task directory and nonempty prompt are required')
     if(session)this.sessionId(session,spec)
     return {...spec,preparedAt:new Date().toISOString()}
@@ -105,6 +115,29 @@ export class DshServiceDriver implements WorkerDriver {
         if(ack?.accepted!==true)throw Error('DSH did not accept task input')
         // Ordin records included inputs as delivered on started, not on session allocation.
         channel.push({kind:'started',at:now(),session})
+        let checkedCursor = before.cursor, lastSample = -Infinity, lastPublished = before.cursor, published = 0
+        const readEvents = async (cursor: number) => {
+          const page = await this.rpc('events',{address:{kind:'session',sessionId:rawId},throughSeq:cursor,maxMessages:200})
+          if (!Array.isArray(page?.records)) throw Error('DSH task history is unavailable')
+          const events:Event[] = page.records.slice(0,200).map((r:any)=>r.event).filter((e:any)=>e&&Number.isSafeInteger(e.seq)&&e.seq>before.cursor&&e.seq<=cursor).sort((a:Event,b:Event)=>a.seq-b.seq)
+          return {events, hasMore:page.hasMore}
+        }
+        const publish = (events: Event[], start: Event, until = Infinity) => {
+          if (!Number.isSafeInteger(start.data?.turn)) return
+          for (const e of events) {
+            if (e.seq <= Math.max(lastPublished, start.seq) || e.seq >= until || e.data?.turn !== start.data.turn || published >= 200) continue
+            if (e.type === 'assistant/message') {
+              const text = assistantText(e).slice(0,1200)
+              if (!text.trim()) continue
+              channel.push({kind:'text',at:now(),text})
+            } else if (e.type === 'tool/call' && typeof e.data?.name === 'string' && /^[a-zA-Z0-9_.:/-]{1,80}$/.test(e.data.name)) {
+              channel.push({kind:'tool',at:now(),name:e.data.name})
+            } else continue
+            lastPublished = e.seq
+            published++
+          }
+        }
+        let progressIncomplete = false
         for(;;){
           if(Date.now()>=deadline){await cancel();result=failedResult('timeout','DSH task deadline reached; cancellation confirmed',false,session);break}
           const waitMs=Math.max(1,Math.min(1000,deadline-Date.now()))
@@ -112,27 +145,34 @@ export class DshServiceDriver implements WorkerDriver {
           const state=this.state(w.state)
           if(stopping){await cancelPromise;result=failedResult('cancelled','DSH cancellation confirmed',false,session);break}
           if(w.reason==='input-required'||state.pendingInput.length){result=failedResult('backend_error','DSH needs approval or an answer in its own interface; task is not complete',false,session);break}
-          if(w.reason==='timeout')continue
+          if(w.reason==='timeout'){
+            if(state.cursor > checkedCursor && Date.now()-lastSample >= 750) {
+              lastSample=Date.now()
+              try {
+                const {events,hasMore}=await readEvents(state.cursor)
+                const start=taskStart(events,requestId)
+                if(hasMore||events.length&&(events[0]!.seq>checkedCursor+1||events.length>=200)){progressIncomplete=true;channel.push({kind:'error',at:now(),error:{code:'protocol_error',message:'DSH progress history is incomplete; final receipt will be checked independently',retryable:false}})}
+                if(start&&!stopping)publish(events,start,events.find(e=>e.type==='turn/end'&&e.data?.turn===start.data?.turn)?.seq)
+                checkedCursor=state.cursor
+              } catch { progressIncomplete=true;channel.push({kind:'error',at:now(),error:{code:'protocol_error',message:'DSH progress history is incomplete or could not be refreshed; final receipt will be checked independently',retryable:false}}) }
+            }
+            continue
+          }
           if(w.reason!=='idle'||state.running||state.queue?.length)throw Error('DSH returned inconsistent stopping state')
-          const page=await this.rpc('events',{address:{kind:'session',sessionId:rawId},throughSeq:state.cursor,maxMessages:500})
-          if(!Array.isArray(page?.records))throw Error('DSH task history is unavailable')
-          const events:Event[]=page.records.map((r:any)=>r.event).filter((e:any)=>e&&Number.isSafeInteger(e.seq)&&e.seq>before.cursor&&e.seq<=state.cursor).sort((a:Event,b:Event)=>a.seq-b.seq)
-          if(page.hasMore && (!events.length||events[0]!.seq>before.cursor+1))throw Error('DSH history window incomplete; cannot verify this turn')
+          const {events,hasMore}=await readEvents(state.cursor)
+          if(hasMore && (!events.length||events[0]!.seq>before.cursor+1||events.length>=200))throw Error('DSH history window incomplete; cannot verify this turn')
           const end=events.filter(e=>e.type==='turn/end').at(-1)
           const reason=end?.data?.reason
-          const input=events.find(e=>e.type==='user/message' && e.data?.source?.rpcId===requestId) ?? events.find(e=>e.type==='agent/inbox/spliced' && Array.isArray(e.data?.inserted) && e.data.inserted.some((m:any)=>m?.source?.rpcId===requestId))
-          const start=input ? (input.type==='agent/inbox/spliced' ? events.find(e=>e.type==='turn/start' && e.seq>input.seq) : events.filter(e=>e.type==='turn/start' && e.seq<input.seq).at(-1)) : undefined
-          if(!input || !start || !end || start.data?.turn!==end.data?.turn)throw Error('DSH receipt is not correlated to the submitted task request')
+          const start=taskStart(events,requestId)
+          if(!start || !end || start.seq>=end.seq || !Number.isSafeInteger(start.data?.turn) || start.data.turn!==end.data?.turn)throw Error('DSH receipt is not correlated to the submitted task request')
           if(reason?.kind!=='completed'){result=failedResult('backend_error',reason?.error?.message??'DSH has no completed turn receipt',false,session);break}
-          const text=events.filter(e=>e.type==='assistant/message'&&e.data?.turn===end!.data?.turn).map(e=>{
-            const content=e.data?.message?.content
-            return Array.isArray(content)?content.filter((b:any)=>b?.type==='text'&&typeof b.text==='string').map((b:any)=>b.text).join(''):''
-          }).filter(Boolean).join('\n')
+          const text=events.filter(e=>e.type==='assistant/message'&&e.seq>start.seq&&e.seq<end.seq&&e.data?.turn===end.data?.turn).map(assistantText).filter(Boolean).join('\n')
           if(!text.trim())throw Error('DSH completed without task output')
           const parsed=parseWorkerReport(text,now())
           if(parsed.kind==='invalid')throw Error('Invalid DSH task report: '+parsed.error)
-          if(parsed.kind==='valid')channel.push({kind:'report',at:now(),report:parsed.report})
-          channel.push({kind:'text',at:now(),text})
+          publish(events,start,end.seq)
+          if(progressIncomplete){const note='（进度记录不完整：事件窗口有缺口；最终回执完整）';if(parsed.kind==='valid')channel.push({kind:'report',at:now(),report:{...parsed.report,summary:parsed.report.summary+note}});channel.push({kind:'text',at:now(),text:note})}
+          else if(parsed.kind==='valid')channel.push({kind:'report',at:now(),report:parsed.report})
           result={status:'completed',text,session};break
         }
       }catch(e){result=failedResult('protocol_error',this.message(e),false,session)}

@@ -98,15 +98,26 @@ export async function downloadAttachment(url, directory, filename, msgId) {
 
   // X08 fix: stream with a size cap so a large attachment cannot exhaust memory.
   const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
-  const response = await fetch(url, { signal: AbortSignal.timeout(30_000) })
-  if (!response.ok) throw new Error(`attachment download failed: ${response.status} ${url.slice(0, 80)}`)
+  // Attachment URLs can carry secrets in either the path or the query. Never forward transport errors or causes.
+  let response
+  try {
+    response = await fetch(url, { signal: AbortSignal.timeout(30_000) })
+  } catch {
+    throw new Error('attachment download failed: network error')
+  }
+  if (!response.ok) throw new Error(`attachment download failed: ${response.status}`)
   const chunks = []
   let totalBytes = 0
-  for await (const chunk of response.body) {
-    totalBytes += chunk.length
-    if (totalBytes > MAX_ATTACHMENT_BYTES) throw new Error(`attachment too large (>${MAX_ATTACHMENT_BYTES} bytes): ${url.slice(0, 80)}`)
-    chunks.push(chunk)
+  try {
+    for await (const chunk of response.body) {
+      totalBytes += chunk.length
+      if (totalBytes > MAX_ATTACHMENT_BYTES) break
+      chunks.push(chunk)
+    }
+  } catch {
+    throw new Error('attachment download failed: response body read error')
   }
+  if (totalBytes > MAX_ATTACHMENT_BYTES) throw new Error(`attachment too large (>${MAX_ATTACHMENT_BYTES} bytes)`)
   const buf = Buffer.concat(chunks)
 
   const tmp = joinPath(attachDir, `.tmp-${process.pid}-${rand(4).toString('hex')}`)

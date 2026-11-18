@@ -2,12 +2,14 @@
 // P0-T2 DSH contract probes. Isolation: /tmp/ordin-p0-dsh/{home,npm}; web is never booted and plugin_manager is never called.
 // Exit contract: 0 means every requested probe finished and produced machine-readable evidence; per-probe status is in the JSON.
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { check, clip, sh, summarize } from './common.mjs'
 
 const ROOT = '/tmp/ordin-p0-dsh'
 const HOME = `${ROOT}/home`
 const BIN = `${ROOT}/npm/node_modules/.bin/dsh`
-const CWD = process.cwd()
+const CWD = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const ENV = { HOME, DSH_HOME: HOME, DSH_TELEMETRY_DISABLED: '1' }
 
 function parseEvents(stdout) {

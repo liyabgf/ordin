@@ -99,6 +99,9 @@ export interface RunningTurn {
 
 export interface WorkerDriver {
   readonly backend: BackendKind
+  /** Opaque configuration generation for display; never a URL or credential. */
+  readonly connectionId?: string
+  preparedConnectionId?(spec: LaunchSpec): string | undefined
   probe(backend?: BackendKind): Promise<DriverHealth>
   /** On resume, preparation must use the session owner rather than the current default backend. */
   prepare(spec: WorkerSpec, session?: BackendSession): Promise<LaunchSpec>

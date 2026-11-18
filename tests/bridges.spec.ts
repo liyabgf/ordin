@@ -12,12 +12,12 @@
 import { mkdtemp, readFile, readdir, rm, stat, utimes, writeFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error -- the bridges are dependency-free `.mjs` so an operator can run them with no build step; they
 // carry no type declarations, and duplicating their shapes in a `.d.ts` would be a second copy able to drift.
 import { parse, scalar, stringify } from '../bridges/lib/frontmatter.mjs'
 // @ts-expect-error -- see above
-import { messageFileName, writeMessage } from '../bridges/lib/inbound.mjs'
+import { downloadAttachment, messageFileName, writeMessage } from '../bridges/lib/inbound.mjs'
 // @ts-expect-error -- see above
 import { chunkText, drainOut } from '../bridges/lib/outbound.mjs'
 // @ts-expect-error -- 同上
@@ -117,6 +117,46 @@ describe('writing a message into a channel directory', () => {
     expect(messageFileName('../../etc/passwd')).toBe('msg--..-etc-passwd.md')
     expect(messageFileName('.hidden')).toBe('msg-hidden.md')
     expect(messageFileName('')).toBe('msg-unnamed.md')
+  })
+})
+
+describe('downloading an attachment with fake HTTP', () => {
+  const url = 'https://files.example.invalid/private-path?signature=fixture-only'
+  const limit = 20 * 1024 * 1024
+  afterEach(() => vi.restoreAllMocks())
+
+  it('saves a successful response under the message-specific filename', async () => {
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('attachment contents'))
+    const dir = await directory()
+    const path = await downloadAttachment(url, dir, 'an image.png', 'msg-5')
+    expect(fetch).toHaveBeenCalledWith(url, { signal: expect.any(AbortSignal) })
+    expect(path).toBe(join(dir, 'attachments', 'msg-5-an_image.png'))
+    expect(await readFile(path, 'utf8')).toBe('attachment contents')
+  })
+
+  it.each([
+    ['HTTP rejection', () => new Response('not found', { status: 404 }), 'attachment download failed: 404'],
+    ['oversized body', () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        const chunk = new Uint8Array(1024 * 1024)
+        for (let i = 0; i < 20; i++) controller.enqueue(chunk)
+        controller.enqueue(new Uint8Array(1))
+        controller.close()
+      },
+    })), `attachment too large (>${limit} bytes)`],
+    ['fetch rejection', () => { throw new TypeError(`could not fetch ${url}`, { cause: new Error(url) }) },
+      'attachment download failed: network error'],
+    ['body read rejection', () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) { controller.error(new Error(url)) },
+    })), 'attachment download failed: response body read error'],
+  ] as const)('reports %s without exposing a URL or retaining a raw cause', async (_case, response, message) => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => response())
+    const dir = await directory()
+    const error: unknown = await downloadAttachment(url, dir, 'file', 'msg-5').catch((err: unknown) => err)
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe(message)
+    expect((error as Error).cause).toBeUndefined()
+    expect(await readdir(join(dir, 'attachments'))).toEqual([])
   })
 })
 

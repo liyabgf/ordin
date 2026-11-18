@@ -68,6 +68,50 @@ function context(name: string) {
   return { runtime, driver, inboxDir, stateDir }
 }
 
+describe('PANEL-6 persisted progress facts', () => {
+  it('keeps only current assignment and attempt evidence through reopening, and projects no control token', async () => {
+    const { runtime: initial, stateDir, inboxDir, driver } = context('panel-progress')
+    let runtime = initial
+    try {
+      await runtime.start()
+      runtime.saveSettings({ acceptMode: 'auto' })
+      runtime.engine.createTicket({ title: 'progress fixture', text: 'fixture' })
+      runtime.saveSettings({ paused: true })
+      const t = runtime.store.tickets.list().find(t => t.title === 'progress fixture')!
+      const assignment = t.assignments.at(-1)!
+      const token = 'internal-control-token'
+      runtime.engine.beginExecutionAttempt(t.id, assignment.id, { token, bootId: 'fixture', host: 'fixture' })
+      runtime.engine.executionAttemptStarted(t.id, assignment.id, token)
+      const add = (type: any, detail: any, at = '2026-01-01T00:00:00Z') => runtime.store.events.append({ticketId:t.id,type,at,detail})
+      add('worker_text', {assignmentId:'old-assignment',text:'OLD ASSIGNMENT'})
+      add('worker_text', {assignmentId:assignment.id,attemptId:'old-attempt',text:'OLD ATTEMPT'})
+      add('worker_phase', {assignmentId:assignment.id,attemptId:token,phase:'started',backend:'dsh',connectionId:'00000000-0000-4000-8000-000000000001'})
+      add('worker_text', {assignmentId:assignment.id,attemptId:token,text:'CURRENT'})
+      add('worker_tool', {assignmentId:assignment.id,attemptId:token,name:'read_file'}, '2026-01-01T00:00:01Z')
+      expect(runtime.progress(t.id)).toMatchObject({ executionState:'running', lastSaid:'CURRENT', backend:'dsh', connectionId:'00000000-0000-4000-8000-000000000001', lastEventAt:'2026-01-01T00:00:01Z', lastEvent:{type:'worker_tool'}, recentTools:[{name:'read_file'}] })
+      const headers = {'x-ordin-request':'1'}
+      const base = runtime.status().panel + 'api/tickets/' + t.id
+      const detail = await (await fetch(base, {headers})).json()
+      const progress = await (await fetch(base + '/progress', {headers})).json()
+      const events = await (await fetch(base + '/events', {headers})).json()
+      expect(detail.executionFingerprint).toMatch(/^[0-9a-f]{64}$/)
+      expect(progress.executionFingerprint).toBe(detail.executionFingerprint)
+      expect(JSON.stringify({detail,progress,events})).not.toContain(token)
+      expect(events.events.some((e:any) => e.detail?.attemptId)).toBe(false)
+      runtime.engine.endExecutionAttempt(t.id, assignment.id, token)
+      runtime.engine.beginExecutionAttempt(t.id, assignment.id, {token:'new-token',bootId:'fixture',host:'fixture'})
+      expect(runtime.progress(t.id)).toMatchObject({loaded:false,recentTools:[]})
+      expect(runtime.progress(t.id).lastSaid).toBeUndefined()
+      add('worker_phase', {assignmentId:assignment.id,attemptId:'new-token',phase:'started',backend:'codex',connectionId:'00000000-0000-4000-8000-000000000002'})
+      await runtime.stop()
+      const config = resolveConfig({ stateDir, workRoot: join(stateDir, 'work'), inboxDir, port: 0 })
+      runtime = createRuntime(boot({ config, logger: silentLogger() }), { logger: silentLogger(), driver, proc: new ProcessRegistry(), notifier: null, acceptanceEnabled: false })
+      await runtime.start()
+      expect(runtime.progress(t.id)).toMatchObject({executionState:'recovery',backend:'codex',connectionId:'00000000-0000-4000-8000-000000000002',recentTools:[]})
+    } finally { await runtime.stop() }
+  })
+})
+
 describe('F4-D1 scenario consumers', () => {
   it('routes conversation scenario, explicit selection, and main triage through the same endpoint and local credential', async () => {
     const { runtime, driver } = context('scenarios')

@@ -98,7 +98,9 @@ describe('F2-B2 asset catalog real Runtime HTTP', () => {
       expect((await f.request('tickets/'+id+'/asset-inputs','POST',{...payload,requestId:'bad-hash',assetRefs:[{...payload.assetRefs[0],contentHash:'0'.repeat(64)}]})).status).toBe(409);
       expect((await f.request('tickets/'+id+'/asset-inputs','POST',{...payload,requestId:'path',assetRefs:[{path:'/etc/passwd'}]})).status).not.toBe(200);
       f.runtime.engine.stopTicket(id,'stop');expect((await f.request('tickets/'+id+'/asset-inputs','POST',{...payload,requestId:'new-after-stop'})).status).toBe(409);
-      expect((await f.request('tickets/'+id+'/asset-inputs','POST',payload)).data.inputId).toBe(first.data.inputId);
+      const endedReplay = await f.request('tickets/'+id+'/asset-inputs','POST',payload);
+      expect(endedReplay.status).toBe(200);
+      expect(endedReplay.data).toMatchObject({inputId:first.data.inputId,deliveryState:'not-delivered',message:'任务已结束，未送达执行端'});
       expect((await trace()).data.references[0].state).toBe('not-delivered');
       const before=f.runtime.engine.require(id);
       f.runtime.store.tickets.save({...before,inputs:before.inputs.map(i=>i.id===first.data.inputId?{...i,deliveredAt:new Date().toISOString()}:i)});

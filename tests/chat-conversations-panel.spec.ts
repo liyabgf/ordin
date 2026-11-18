@@ -29,7 +29,7 @@ function fixture(initial = [conversation('panel-default'),conversation('b')], st
   let release: ((v: any)=>void) | undefined, releaseHistory: ((v: any)=>void) | undefined, releaseContinue: ((v: any)=>void) | undefined, releaseList: ((v: any)=>void) | undefined
   const histories: Record<string,any[]> = Object.fromEntries(initial.map(c=>[c.id,[{id:c.id+'-1',role:'ordin',content:'history '+c.id}]]))
   const calls: {path:string,method:string,body:any}[] = []
-  const messages: any[]=[]; let messageResponse: any = null
+  const messages: any[]=[]; let messageResponse: any = null, loseNextMessageResponse = false
   const ok = (body: any) => ({ok:true,status:200,json:async()=>structuredClone(body)})
   const fetch = async (url: string,init: any = {}) => {
     const path = url.replace('/ordin/api/',''), method = init.method || 'GET', body = init.body ? JSON.parse(init.body) : undefined
@@ -53,6 +53,7 @@ function fixture(initial = [conversation('panel-default'),conversation('b')], st
     }
     if (action==='message') {
       histories[id]!.push({role:'user',content:body.text}); const response=ok(messageResponse || {reply:'reply '+id}); messageResponse=null
+      if (loseNextMessageResponse) { loseNextMessageResponse = false; throw new Error("response lost") }
       if (defer) return new Promise<any>(r=>{release=r})
       return response
     }
@@ -68,7 +69,7 @@ function fixture(initial = [conversation('panel-default'),conversation('b')], st
     document:{getElementById:(id: string)=>nodes[id],createElement:(tag: string)=>new Node(tag),body:{scrollHeight:0}},
     URLSearchParams, window:{location:{search:query,origin:'http://ordin.test'},history:{replaceState(_state:any,_title:string,url:string){ query=url }},parent:{postMessage:(body:any,origin:string)=>{expect(origin).toBe('http://ordin.test');messages.push(body)}},addEventListener(){},scrollTo(){},confirm:()=>true},localStorage:{getItem:(k:string)=>storage.get(k)??null,setItem:(k:string,v:string)=>storage.set(k,v),removeItem:(k:string)=>storage.delete(k)},fetch,
   })
-  return {nodes,calls,storage,settle,messages,query:()=>query,respondMessage:(v:any)=>{messageResponse=v},rows:()=>rows,fail:(s:string)=>{fail=s},defer:()=>{defer=true},deferHistory:()=>{deferHistory=true},
+  return {nodes,calls,storage,settle,messages,query:()=>query,respondMessage:(v:any)=>{messageResponse=v},loseMessageResponse:()=>{loseNextMessageResponse=true},rows:()=>rows,fail:(s:string)=>{fail=s},defer:()=>{defer=true},deferHistory:()=>{deferHistory=true},
     release:(reply='OLD RESPONSE')=>release!(ok({reply})),releaseHistory:()=>releaseHistory!(ok({messages:[{content:'OLD HISTORY'}]})),releaseContinue:(id='late-task')=>{const c=conversation(id,'接续任务');rows.push(c);histories[c.id]=[];releaseContinue!(ok({conversation:c}))},deferContinue:()=>{deferContinue=true},deferList:()=>{deferList=true},releaseList:()=>releaseList!(ok({conversations:rows})),continueFailure:(s:string)=>{continueFailure=s},
     select:async(id:string)=>{const b=nodes['conversation-list']!.children.find(n=>n.attrs['data-id']===id);expect(b).toBeDefined();await b!.event('click')},
     type:async(text:string)=>{nodes.input!.value=text;await nodes.input!.event('input')},
@@ -165,13 +166,38 @@ describe('conversation panel actual script (minimal DOM, no browser)',()=>{
     f.nodes.log!.children.find(n=>n.attrs['data-task-id']==='TASK-42')!.children.at(-1)!.event('click');
     expect(f.messages).toContainEqual({type:'ordin:navigate',tab:'workspace',ticketId:'TASK-42'});
   });
-  it('preserves failed send and task creation drafts and offers explicit retry',async()=>{
-    const f=fixture();await f.settle();await f.type(' exact draft\n ');f.fail('network unavailable');await f.nodes.send!.event('click');
-    expect(f.nodes.input!.value).toBe(' exact draft\n ');expect(f.nodes['send-retry']!.hidden).toBe(false);
-    f.fail('');await f.nodes['send-retry']!.event('click');expect(f.nodes.input!.value).toBe('');
-    f.respondMessage({reply:'',toolOutcomes:[{name:'create_task',ok:false,error:'No executor'}]});
-    await f.type('please create a task');await f.nodes.send!.event('click');
-    expect(f.nodes.log!.textContent).toContain('No executor');expect(f.nodes.input!.value).toBe('please create a task');expect(f.nodes['send-retry']!.hidden).toBe(false);
+  it.each([undefined, '', '   ', 123])('keeps selected assets when a successful task receipt has invalid ID %j', async ticketId => {
+    const ref = { id:'asset-1', revision:3, contentHash:'fixed-hash' }
+    const asset = { ...ref, name:'参考资料' }
+    const key = 'ordin.chat.conversationAssets'
+    const f = fixture(undefined, new Map([[key, JSON.stringify({ 'panel-default':[asset] })]]))
+    await f.settle()
+    expect(f.nodes['asset-chips']!.children).toHaveLength(1)
+    f.respondMessage({reply:'',toolOutcomes:[{name:'create_task',ok:true,data:{ticketId}}]})
+    await f.type(' 交办草稿 ')
+    await f.nodes.send!.event('click')
+    expect(f.calls.filter(c=>c.method==='POST')).toEqual([
+      {path:'conversations/panel-default/message',method:'POST',body:{text:'交办草稿',assetRefs:[ref]}},
+    ])
+    expect(f.nodes['asset-chips']!.textContent).toContain('参考资料 · r3')
+    expect(JSON.parse(f.storage.get(key)!)).toEqual({ 'panel-default':[asset] })
+    expect(f.nodes.input!.value).toBe(' 交办草稿 ')
+    expect(f.nodes.log!.children.some(n=>'data-task-id' in n.attrs)).toBe(false)
+    expect(f.nodes['send-feedback']!.textContent).toContain('缺少有效任务 ID')
+  })
+
+  it('preserves drafts and only reads history after an unknown send result',async()=>{
+    const f=fixture();await f.settle();await f.type(' exact draft\n ');f.loseMessageResponse();await f.nodes.send!.event('click');
+    expect(f.nodes.input!.value).toBe(' exact draft\n ');expect(f.nodes['send-recovery']!.hidden).toBe(false);expect(f.nodes['send-feedback']!.textContent).toContain('发送结果未知');
+    const beforeCheck = f.calls.length
+    await f.nodes['send-retry']!.event('click')
+    expect(f.calls.slice(beforeCheck)).toEqual([{path:'conversations/panel-default/messages?limit=50',method:'GET',body:undefined}])
+    expect(f.nodes.log!.textContent).toBe('history panel-defaultexact draft')
+    expect(f.nodes.input!.value).toBe(' exact draft\n ')
+    expect(f.calls.filter(c=>c.path.endsWith('/message'))).toHaveLength(1)
+    const g=fixture();await g.settle();g.respondMessage({reply:'',toolOutcomes:[{name:'create_task',ok:false,error:'No executor'}]});
+    await g.type('please create a task');await g.nodes.send!.event('click');
+    expect(g.nodes['send-feedback']!.textContent).toContain('No executor');expect(g.nodes.input!.value).toBe('please create a task');expect(g.nodes['send-retry']!.hidden).toBe(false);expect(g.nodes['send-feedback']!.textContent).toContain('先查看任务工作台核对');expect(g.calls.filter(c=>c.path.endsWith('/message'))).toHaveLength(1);
   });
   it('only continues tasks explicitly requested by URL, consumes URL and selects conversation links',async()=>{
     const f=fixture(undefined,undefined,'?task=T-explicit');await f.settle();await f.settle();

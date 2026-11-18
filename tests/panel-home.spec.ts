@@ -32,13 +32,21 @@ function fixture(rows = [summary()]) {
   const fetch = vi.fn(async (url: string) => ({ ok: true, status: 200, json: async () => url.includes('tickets?state=all') ? { tickets: rows } : {} }))
   const context: any = { document: { getElementById: get, createElement: (tag: string) => new Element(tag), createTextNode: (text: string) => { const e = new Element('text'); e.textContent = text; return e }, addEventListener() {}, hidden: false }, window: { addEventListener() {}, setInterval() {} }, location: { origin: 'http://test', hash: '' }, fetch, URLSearchParams, localStorage: { getItem: () => null, setItem() {} }, setTimeout, clearTimeout, console }
   const chunk = (start: string, end: string) => { const a = html.indexOf(start), b = html.indexOf(end, a); if (a < 0 || b < 0) return ''; return html.slice(a, b) }
-  const navigate = vi.fn()
-  runInNewContext([chunk('  const HEADER =', '  // Reconcile in place:'), chunk('  const api = async', '  /**\n   * 把一段文本'), chunk('  const classifyHomeTicket =', '  const loadFriendlyHome =')].join('\n'), { ...context, friendlyNavigate: navigate })
-  return { nodes, fetch, navigate, home: context.window.HomeInbox }
+  const show = vi.fn()
+  for (const id of ['home-start','start-discuss','home-tasks','home-assets','workspace-frame']) get(id)
+  const navigate = runInNewContext([chunk('  const HEADER =', '  // Reconcile in place:'), chunk('  const api = async', '  /**\n   * 把一段文本'), chunk('  const friendlyNavigate =', '  const loadFriendlyHome ='), 'friendlyNavigate'].join('\n'), { ...context, show })
+  return { nodes, fetch, navigate, show, home: context.window.HomeInbox }
 }
 
 describe('F5-U2 home inbox actual JavaScript', () => {
   it('parses the complete page script, not just extracted helpers', () => { expect(() => new Script(script)).not.toThrow() })
+  it('offers three clear user goals and opens assets without creating work',async()=>{
+    const f = fixture()
+    for (const id of ['home-start', 'home-tasks', 'home-assets']) f.nodes[id].onclick()
+    expect(f.show.mock.calls).toEqual([['chat'], ['tickets'], ['assets']])
+    expect(f.nodes['workspace-frame'].src).toBe('/ordin/workspace')
+    expect(f.fetch).not.toHaveBeenCalled()
+  });
   it('partitions real summary states without duplicating active work into ended', async () => {
     const f = fixture([summary({id:'active',title:'Active only',stage:'running'}),summary({id:'closed',title:'Closed only',stage:'done',outcome:'done'}),summary({id:'question',title:'Question only',waitingForAnswer:true})])
     await f.home.refresh()
@@ -71,7 +79,8 @@ describe('F5-U2 home inbox actual JavaScript', () => {
     expect(rendered.textContent).toContain('<b>unsafe</b>')
     expect(rendered.textContent).toContain('2026-01-01T01:00:00Z')
     rendered.children[0].onclick!()
-    expect(f.navigate).toHaveBeenCalledWith('workspace','evil')
+    expect(f.nodes['workspace-frame'].src).toBe('/ordin/workspace?ticket=evil')
+    expect(f.show).toHaveBeenCalledWith('tickets')
   })
 
   it('loads all summaries, keeps old cards on failure, and ignores stale generations', async () => {

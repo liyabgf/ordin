@@ -92,11 +92,11 @@ describe('chat asset selection actual script in VM',()=>{
     expect(f.calls.find(c=>c.path==='conversations/a/message')!.body).toEqual({text:'use report',assetRefs:[pin(asset())]})
     f.fail(false);f.response({toolOutcomes:[{name:'create_task',ok:false,error:'no executor'}]});await f.send();expect(f.nodes['asset-chips']!.children).toHaveLength(1)
     f.response({reply:'chat only'});await f.send();expect(f.nodes['asset-chips']!.children).toHaveLength(1)
-    f.response({reply:'ok',toolOutcomes:[{name:'create_task',ok:true,data:{}}]});f.defer();const pending=f.send();await settle();f.setAssets([asset('late',{name:'Added while sending'})]);await f.open();await f.choose();f.release();await pending
+    f.response({reply:'ok',toolOutcomes:[{name:'create_task',ok:true,data:{ticketId:'task-late'}}]});f.defer();const pending=f.send();await settle();f.setAssets([asset('late',{name:'Added while sending'})]);await f.open();await f.choose();f.release();await pending
     expect(f.nodes['asset-chips']!.textContent).toContain('Added while sending');expect(f.nodes['asset-chips']!.textContent).not.toContain('友好报告')
   })
   it('successful delayed submits clear origin choices without touching another conversation',async()=>{
-    const f=fixture();await settle();await f.open();await f.choose();f.defer();const pending=f.send();await settle();await f.select('b')
+    const f=fixture();await settle();await f.open();await f.choose();f.response({reply:'ok',toolOutcomes:[{name:'create_task',ok:true,data:{ticketId:'task-origin'}}]});f.defer();const pending=f.send();await settle();await f.select('b')
     f.setAssets([asset('second',{name:'Second'})]);await f.open();await f.choose();f.release();await pending
     expect(f.nodes['asset-chips']!.textContent).toContain('Second');await f.select('a');expect(f.nodes['asset-chips']!.children).toHaveLength(0)
   })

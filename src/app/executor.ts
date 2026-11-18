@@ -556,6 +556,7 @@ export class WorkerExecutor implements Executor {
     const includedInputs = undelivered(ticket).map(input => input.id)
     const token = randomUUID()
     if (!this.host.engine.beginExecutionAttempt(ticket.id, assignment.id, { token, bootId: this.bootId, host: this.hostName })) throw new Later(PAUSED_RETRY_MS)
+    const connectionId = this.host.driver.preparedConnectionId?.(spec) ?? this.host.driver.connectionId
     let turn: RunningTurn
     try {
       turn = session === undefined
@@ -579,7 +580,7 @@ export class WorkerExecutor implements Executor {
       milestoneDone: false,
     }
     this.turns.set(ticket.id, record)
-    this.pumpTurn(ticket.id, record, includedInputs)
+    this.pumpTurn(ticket.id, record, includedInputs, connectionId)
     return record
   }
 
@@ -589,8 +590,11 @@ export class WorkerExecutor implements Executor {
    * final completed -> input confirmation + turnEnded, final failed/cancelled -> visible failure with the cause.
    * A channel that closes without a final event is a protocol error, not a completion.
    */
-  private pumpTurn(ticketId: string, record: TurnRecord, includedInputs: readonly string[]): void {
+  private pumpTurn(ticketId: string, record: TurnRecord, includedInputs: readonly string[], connectionId?: string): void {
     const { turn, assignmentId, token } = record
+    const evidence = { attemptId: token, backend: turn.backend, ...(connectionId && /^[0-9a-f-]{36}$/.test(connectionId) ? { connectionId } : {}) }
+    const write = (at: string, type: TicketEventType, detail: Record<string, unknown>) =>
+      this.recordWorkerEvent(ticketId, assignmentId, at, type, { ...evidence, ...detail })
     void (async () => {
       try {
         for await (const event of turn.events) {
@@ -600,7 +604,7 @@ export class WorkerExecutor implements Executor {
           switch (event.kind) {
             case 'started': {
               this.noteSession(ticketId, event.session)
-              this.recordWorkerEvent(ticketId, assignmentId, event.at, 'worker_phase', { phase: 'started', backend: turn.backend })
+              write(event.at, 'worker_phase', { phase: 'started', backend: turn.backend })
               if (this.currentLaunch(ticketId, assignmentId) !== undefined) {
                 this.host.engine.executionAttemptStarted(ticketId, assignmentId, token, event.pid)
                 // The hand-over is done: the slot is now held by the TURN (turns map), not the launch (starting).
@@ -613,18 +617,18 @@ export class WorkerExecutor implements Executor {
               break
             }
             case 'report':
-              this.recordWorkerEvent(ticketId, assignmentId, event.at, 'worker_phase', { phase: 'report', reportState: event.report.state })
+              write(event.at, 'worker_phase', { phase: 'report', reportState: event.report.state })
               await this.forwardReport(ticketId, assignmentId, event.report, token)
               break
             case 'error':
-              this.recordWorkerEvent(ticketId, assignmentId, event.at, 'worker_phase', { phase: 'error', errorCode: event.error.code })
+              write(event.at, 'worker_phase', { phase: 'error', errorCode: event.error.code })
               this.health.problem(`Worker turn of ${ticketId.slice(0, 8)} reported ${event.error.code}: ${event.error.message}`)
               break
             case 'final': {
               const result = event.result
               if (result.usage !== undefined) this.host.engine.recordExecutionUsage(ticketId, assignmentId, token, result.usage)
               this.host.engine.endExecutionAttempt(ticketId, assignmentId, token)
-              this.recordWorkerEvent(ticketId, assignmentId, event.at, 'worker_phase', {
+              write(event.at, 'worker_phase', {
                 phase: 'final', result: result.status, ...(result.error === undefined ? {} : { errorCode: result.error.code }),
               })
               this.noteSession(ticketId, result.session)
@@ -653,14 +657,14 @@ export class WorkerExecutor implements Executor {
               return
             }
             case 'text':
-              this.recordWorkerEvent(ticketId, assignmentId, event.at, 'worker_text', { text: clippedWorkerText(event.text, WORKER_EVENT_TEXT_CHARS) })
+              write(event.at, 'worker_text', { text: clippedWorkerText(event.text, WORKER_EVENT_TEXT_CHARS) })
               break
             case 'tool':
-              this.recordWorkerEvent(ticketId, assignmentId, event.at, 'worker_tool', { name: clippedWorkerText(event.name, WORKER_EVENT_TOOL_CHARS) })
+              write(event.at, 'worker_tool', { name: clippedWorkerText(event.name, WORKER_EVENT_TOOL_CHARS) })
               break
             case 'usage':
               this.host.engine.recordExecutionUsage(ticketId, assignmentId, token, event.usage)
-              this.recordWorkerEvent(ticketId, assignmentId, event.at, 'worker_usage', { usage: event.usage })
+              write(event.at, 'worker_usage', { usage: event.usage })
               break
             default: {
               // A4: the union is frozen, so an unknown member is a loud protocol failure, never a silent skip.
@@ -697,7 +701,11 @@ export class WorkerExecutor implements Executor {
   }
 
   private recordWorkerEvent(ticketId: string, assignmentId: string, at: string, type: TicketEventType, detail: Record<string, unknown>): void {
-    if (!type.startsWith('worker_') || this.currentLaunch(ticketId, assignmentId) === undefined) return
+    const ticket = this.host.store.tickets.get(ticketId)
+    const finalReceipt = type === 'worker_phase' && detail.phase === 'final'
+      && ticket !== undefined && latestAssignment(ticket)?.id === assignmentId
+      && ticket.executionAttempt?.token === detail.attemptId
+    if (!type.startsWith('worker_') || (!finalReceipt && this.currentLaunch(ticketId, assignmentId) === undefined)) return
     this.host.store.atomic(() => this.host.store.events.append({ ticketId, at, type, detail: { assignmentId, ...detail } }))
   }
 
@@ -1132,7 +1140,7 @@ export class WorkerExecutor implements Executor {
     // A stale retry supplies no successful-stop evidence and must never touch its replacement.
     if (!shouldStop()) throw new Error(`Stop scope changed for ${ticketId}; original work has no successful stop evidence`)
     this.halting.add(ticketId)
-    let turnCancelled = !cancelTurn || turn === undefined
+    let turnCancelled = false
     try {
       // 1) The worker turn, when the stop cuts the turn short. The driver kills its own process group;
       //    the turn's 'final' (cancelled) event then settles the pump.
@@ -1145,16 +1153,16 @@ export class WorkerExecutor implements Executor {
       const processes = this.host.proc.list().filter(record => processGroups.includes(record.groupId)).map(record => ({
         id: record.id, groupId: record.groupId, status: record.status, exitCode: record.exitCode, exitSignal: record.exitSignal,
       }))
-      const ok = turnCancelled && processes.every(record => ['canceled', 'stopped', 'exited'].includes(record.status))
+      const ok = (!cancelTurn || turn === undefined || turnCancelled) && processes.every(record => ['canceled', 'stopped', 'exited'].includes(record.status))
       this.host.store.atomic(() => this.host.store.events.append({
         ticketId, at: new Date().toISOString(), type: 'stop_result', by: { kind: 'system', id: 'executor' },
-        detail: { assignmentId: intent.assignmentId ?? null, ok, turnCancelled, processes },
+        detail: { assignmentId: intent.assignmentId ?? null, ok, turnCancelled, cleanupOnly: !cancelTurn, processes },
       }))
       if (!ok) throw new Error(`Stop was not confirmed for ${ticketId}`)
     } catch (error) {
       this.host.store.atomic(() => this.host.store.events.append({
         ticketId, at: new Date().toISOString(), type: 'stop_result', by: { kind: 'system', id: 'executor' },
-        detail: { assignmentId: intent.assignmentId ?? null, ok: false, turnCancelled, error: reason(error) },
+        detail: { assignmentId: intent.assignmentId ?? null, ok: false, turnCancelled, cleanupOnly: !cancelTurn, error: reason(error) },
       }))
       this.health.problem(`Could not stop the work of ${ticketId}: ${reason(error)}`)
       throw error

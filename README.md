@@ -1,65 +1,88 @@
 # Ordin
 
-个人任务协调器：在对话中交代工作，由 Ordin 创建并跟踪任务，调用 DSH、Codex 或 Claude Code 等执行端，汇总结果和交付物。
+你自己的任务调度中台：你在聊天里说一句话，Ordin 决定派给谁干（DSH / Codex / Claude Code 等执行单元），
+盯着干完，把结果送回你说话的地方。
 
-当前为开发预览版。面板与账本可独立启动；执行任务需要另行配置执行端。DSH 服务适配已通过小任务验证；这不代表所有执行端、聊天渠道或长期稳定性均已完成生产验收。
+> 当前状态：**独立宿主与三后端驱动已实现并通过离线一体化验收；真实后端因凭据未通过 P0，还不能宣称可生产执行。**
+> 现役系统仍是 [Ordin](https://github.com/liyabgf/dsh-Ordin)（DSH 插件）。本仓库是它的独立化后续工程。
 
-## 启动
+## 先读哪份
 
-需要 Node.js ≥24.9。
+| 文档 | 内容 |
+| --- | --- |
+| [docs/33-functional-execution-plan.md](docs/33-functional-execution-plan.md) | **当前执行目标：功能优先，逐步完成真实任务闭环与交付验收。** |
+| [docs/01-current-goal.md](docs/01-current-goal.md) | 独立宿主阶段的目标与完成定义；作为当前产品工程的基础阶段验收 |
+| [AGENTS.md](AGENTS.md) | **执行纪律正典：约束干活的 agent。** 动手前必读；开工先登记 docs/ledger.md |
+| [docs/02-execution-discipline.md](docs/02-execution-discipline.md) | 纪律索引（正典在 AGENTS.md；事故登记 docs/incidents.md） |
+| [docs/03-architecture.md](docs/03-architecture.md) | 目标架构：WorkerDriver 抽象 + 三个执行后端 |
+| [docs/10-migration-plan.md](docs/10-migration-plan.md) | 迁移策略：为什么分这几批 |
+| [docs/20-execution-engineering.md](docs/20-execution-engineering.md) | **执行工程方案：任务卡级分解，派单按这里**（含验收命令与证据目录） |
+| [docs/00-vision.md](docs/00-vision.md) | 长期方向（个人数字人格 / 手机操作端）。**参考，不是当下目标** |
+
+背景调研：[Ordin 多后端可行性评估](docs/background/multiharness-feasibility-20261114.md)。
+
+## 独立启动
+
+只需 Node ≥24.9 和项目依赖。无需先安装或启动 DSH、Codex、Claude Code，也无需先设置 API key。
 
 ```bash
-git clone https://github.com/liyabgf/ordin.git
 cd ordin
-npm ci
+
+# 任选 npm 或 pnpm 安装依赖
+npm install
+# pnpm install
+
 npm start
+# pnpm start
 ```
 
-打开终端显示的本地地址，默认 http://127.0.0.1:7471/ordin/。使用 Ctrl-C 正常停止。面板仅面向受信任的本机使用。
+pnpm 路径已用 11.28.5 验证；`pnpm-workspace.yaml` 的 `allowBuilds` 只批准 `esbuild` 安装脚本，保留其余依赖脚本的默认限制。CI 可用 `pnpm install --frozen-lockfile`。
 
-也支持 pnpm；项目锁文件与 pnpm-workspace.yaml 限制依赖构建脚本。
+打开 http://127.0.0.1:7471/ordin/（以终端打印地址为准）。Ctrl-C 停止。
+面板、设置和任务账本独立运行；执行工具未配置时健康状态会提示原因，调用任务执行时会明确拒绝，不会伪装完成。配置好工具后重试任务会重新检查可用性。
 
-## 模型与执行端
+## 第三方模型设置
 
-在设置中配置 Ordin 自己的对话模型。支持 OpenAI Chat Completions 兼容服务；密钥保存于本机独立凭据文件（0600），不应提交到 Git。
-
-DSH 使用自己的模型和凭据，与 Ordin 对话模型独立。连接已有 DSH 服务时，在启动 Ordin 的环境中设置 `ORDIN_DSH_URL` 和 `ORDIN_DSH_SERVICE_TOKEN`。后者是 DSH 服务访问令牌，不是模型 API key；请通过本机私有配置注入，不写入任务文本、命令历史或仓库。没有服务地址时使用 DSH CLI 模式。
-
-服务模式支持创建 Session、任务入队、结果关联、续接与取消。接收成功不等于任务完成；外部执行状态不确定时可从本地列表移除并保留记录和文件。当前服务模式只允许 full 请求并沿用 DSH 自身权限配置，不提供逐任务 read/edit 沙箱保证；尚无实时 token 流，长历史超出读取窗口时明确拒绝。
-
-受理模式默认 observe（只记录），启用执行需显式选择 auto。Codex 和 Claude Code 使用各自安装和登录状态。
-
-## 面板
-
-- 首页：任务收件箱和需要处理的事项。
-- 开始：独立对话历史、草稿和模型选择。
-- 任务：进度、报告、执行动作及交付物。文本交付物可安全预览，其他文件可下载。
-- 更多：设置与高级诊断。
-
-## 数据与维护
-
-状态、工作目录和收件目录默认位于用户主目录的 .ordin 下，可通过 `ORDIN_STATE_DIR`、`ORDIN_WORK_ROOT`、`ORDIN_INBOX_DIR` 调整。不要上传这些目录或其中的 SQLite、密钥、任务记录。
-
-离线备份/恢复前必须停止服务：
+在「设置 → Ordin 模型」选择 OpenAI、DeepSeek 或自定义 OpenAI 兼容接口，填写服务地址、模型和 API key。密钥保存到独立凭据文件（0600），界面不回显。支持测试连接和获取模型列表。也可使用环境变量认证，在启动前导出：
 
 ```bash
-node --experimental-transform-types src/index.ts storage backup --state-dir /absolute/path/to/state --output /absolute/path/to/backup.sqlite3
-node --experimental-transform-types src/index.ts storage restore --state-dir /absolute/path/to/state --input /absolute/path/to/backup.sqlite3
+export OPENAI_API_KEY="your-key"
+npm start
+# 或：pnpm start
 ```
 
-维护工具只处理数据库；工作文件与凭据需要分别备份。
+本地保存的密钥优先，清除后恢复环境变量认证。密钥不进入设置 JSON、数据库或日志。当前支持 OpenAI Chat Completions 兼容协议，尚未支持 Anthropic 原生协议。
 
-## 开发与边界
+## 离线数据库备份与恢复
+
+在需要切版本或迁移前，先停止 Ordin，然后显式指定 state 目录与备份文件：
 
 ```bash
-npm run typecheck
-npx vitest run --maxWorkers=1 --no-file-parallelism
+node --experimental-transform-types src/index.ts storage backup --state-dir /absolute/path/to/state --output /absolute/path/to/ordin.sqlite3
+node --experimental-transform-types src/index.ts storage restore --state-dir /absolute/path/to/state --input /absolute/path/to/ordin.sqlite3
 ```
 
-- [安全边界](SECURITY.md)
-- [发布快照说明](PUBLICATION.md)
-- [架构](docs/03-architecture.md)
-- [工程规划](docs/33-functional-execution-plan.md)
-- [执行纪律](AGENTS.md)
+恢复会保留当前数据库 rollback 文件；若该目录仍被服务锁定、输入不完整或 SQLite sidecar 状态无法安全整理，命令会拒绝。维护命令只处理 SQLite 主库，不包含模型 API key、工作目录、上传文件或渠道凭据。密钥必须按独立凭据策略另行保存。不要手改 schema version 来回滚。
 
-本仓库是脱敏的独立源码快照，未携带原开发提交历史、私人任务、运行日志或凭据。历史设计文档仅供参考，能力以当前代码和实际验收为准。
+## 工程基线
+
+- Node ≥ 24.9（与 DSH 一致；直接用 Node 跑 .ts，无构建步骤也能启动）
+- `npm run check`：typecheck + 测试。**绿灯的定义是退出码**（见纪律 0.1）
+- `npm start`：启动 Ordin 自己的面板与任务管理；执行工具检查在后台进行，不阻塞启动。
+- `scripts/gate.sh`：最小闸门，落盘日志后报告退出码
+
+## 目录
+
+```
+src/core/     领域模型与引擎：Trigger → Gate → Mandate → Ticket → Assignment（无外部依赖）
+src/sources/  五个来路：cron / inbox / chat / rule / api
+src/drivers/  执行单元适配：dsh / codex / claude（各自 pin 版本 + 契约测试）
+src/desk/     总管分诊（自带 LLM client，不再借宿主的）
+src/app/      store / effects / delivery / 自带 HTTP server 与面板
+src/index.ts  独立进程入口
+prompts/      worker / orchestrator / triage 提示词
+bridges/      聊天桥（独立进程，从 Ordin 原样迁入）
+panel/        面板静态资源
+tests/        行为测试 + 各后端契约测试
+scripts/      闸门与工具
+```

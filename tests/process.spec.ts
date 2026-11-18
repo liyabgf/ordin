@@ -183,6 +183,52 @@ describe('ProcessRegistry', () => {
     await expectDead(grandPid)
   })
 
+  it.skipIf(process.platform === 'win32')('escalates after the group leader closes early', async () => {
+    const reg = registry()
+    const descendant = [
+      '/*ordin-p2-test-early-close*/',
+      "process.on('SIGTERM', () => {})",
+      "process.stdout.write('ready')",
+      'setTimeout(() => {}, 15000)',
+    ].join('\n')
+    const leader = [
+      '/*ordin-p2-test-early-close*/',
+      "const { spawn } = require('node:child_process')",
+      "process.on('SIGTERM', () => process.exit(17))",
+      `const c = spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { stdio: ['ignore', 'pipe', 'ignore'] })`,
+      "c.stdout.once('data', () => console.log('ready:' + c.pid))",
+    ].join('\n')
+    const rec = reg.spawn({ owner: 'ticket-early-close', argv: [NODE, '-e', leader], graceMs: 250 })
+    let grandPid: number | null = null
+    try {
+      grandPid = await pollFor(() => {
+        const marker = /ready:(\d+)\n/.exec(rec.stdout)
+        return marker?.[1] ? Number(marker[1]) : null
+      })
+      expect(alive(grandPid), 'fixture grandchild must be alive before cancellation').toBe(true)
+      await reg.cancel(rec.id)
+      expect(await reg.wait(rec.id)).toMatchObject({ status: 'canceled', exitCode: 17, exitSignal: null })
+      expect(rec.error).toBeNull()
+      await expect.poll(() => alive(grandPid), {
+        message: 'grandchild must not survive group escalation', timeout: 1000,
+      }).toBe(false)
+    } finally {
+      // Clean up our own fixture even if the registry settled before escalation.
+      const cleanupTarget = rec.status === 'running' && rec.pid !== null
+        ? -rec.pid
+        : alive(grandPid) ? grandPid : null
+      if (cleanupTarget !== null) {
+        try {
+          process.kill(cleanupTarget, 'SIGKILL')
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
+        }
+      }
+      await reg.wait(rec.id)
+      if (grandPid !== null) await expectDead(grandPid)
+    }
+  })
+
   it('cancelGroup kills every member of the group id and only those', async () => {
     const reg = registry()
     const a = reg.spawn({ owner: 't', groupId: 'job-1', argv: [NODE, '-e', SLEEPER], graceMs: 100 })

@@ -34,6 +34,7 @@
            display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center }
   h1 { font-size: 16px; font-weight: 700; margin: 0 6px 0 0; letter-spacing: .01em; color: var(--fg) }
   h2 { font-size: 13px; margin: 0 0 8px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .05em }
+  :where(button, a, summary, iframe, input, select, textarea):focus-visible { outline: 3px solid var(--accent); outline-offset: 2px }
   main { padding: 20px 24px 72px; max-width: 1360px; margin: 0 auto }
   .pill { background: var(--subtle); border: 1px solid var(--line); border-radius: 999px; padding: 3px 11px;
           font-size: 12px; color: var(--muted); white-space: nowrap; transition: border-color .15s }
@@ -81,10 +82,11 @@
          transition: all .15s; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03) }
   @media (max-width: 760px) {
     header { padding: 10px 12px }
-    #tabs { overflow-x: auto; flex-wrap: nowrap; gap: 2px }
+    header { position: static }
+    #tabs { flex-wrap: wrap; gap: 2px }
     #tabs > button { min-width: max-content; padding: 6px 12px }
     #more-nav { flex: 0 0 auto }
-    .more-menu { position: fixed; top: auto; right: 12px; left: 12px; bottom: 12px }
+    .more-menu { position: static; min-width: 0 }
     main { padding: 16px 12px 72px }
     .welcome-card { padding: 22px 18px }
     .welcome-card h1 { font-size: 23px }
@@ -263,7 +265,9 @@
   #tabs > button { min-height:40px; border-radius:7px; }
   #tabs > button[aria-selected=true] { box-shadow:none; background:#e8f2ec; border-color:transparent; }
   #tab-chat > .conversation-surface { border:1px solid var(--line); box-shadow:none; border-radius:10px; }
-  .welcome-card { box-shadow:none; background:#fff; border-radius:10px; padding:32px; }
+  .welcome-card { box-shadow:none; background:#fff; border-radius:10px; padding:clamp(14px,4vw,32px); }
+  #tab-overview, #tab-settings { overflow-wrap:anywhere }
+  input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px }
   .primary-action { background:#176b59; color:white; }
   .home-work-grid .card { box-shadow:none; }
   @media(max-width:760px) { header {padding:10px 14px;} main {padding:12px 12px 40px;} header > .muted {display:none;} }
@@ -358,12 +362,12 @@
     <section class="card welcome-card">
       <p class="eyebrow">ORDIN · 你的工作助理</p>
       <h1>今天，想完成什么？</h1>
-      <p class="muted">用平常的话描述结果。我们会告诉你怎么安排，并把进度和结果留在这里。</p>
-      <div class="row"><button class="btn primary-action" id="home-start">开始一项工作</button><button class="btn" id="home-tasks">查看我的任务</button></div>
+      <p class="muted">从聊天开始，讨论想法或梳理计划。想交办工作时，说清要做什么和预期结果。创建成功后，可以从聊天任务卡或任务工作台跟进。</p>
+      <div class="row"><button class="btn primary-action" id="home-start">开始一项工作</button><button class="btn" id="home-tasks">查看我的任务</button><button class="btn" id="home-assets">查看资产</button></div>
       <p class="setup-line" id="home-readiness" role="status">正在检查可用能力…</p>
     </section>
     <div class="row" style="justify-content:space-between"><h2>任务收件箱</h2><button class="btn small" id="home-inbox-refresh">刷新任务</button></div>
-    <div id="home-inbox-error" role="status" aria-live="polite"></div>
+    <div id="home-inbox-error" role="status"></div>
     <div class="grid home-work-grid">
       <section class="card"><h2>需要你处理</h2><div id="home-attention"><span class="muted">读取中…</span></div></section>
       <section class="card"><h2>进行中的安排</h2><div id="home-active"><span class="muted">读取中…</span></div></section>
@@ -710,6 +714,25 @@
           <label for="sq-prepare">起跑前命令（留空即不跑）</label>
           <input type="text" id="sq-prepare" placeholder="例如 git pull">
         </div>
+        <div class="set-sec" id="sec-execution-connections">
+          <b>执行工具连接</b>
+          <p class="muted">连接单独保存，不会更改上方的默认执行工具。连接变更不会迁移当前运行回合。后续启动或续接按当时配置准备，历史归属以任务记录为准。</p>
+          <label for="execution-connection-backend">要连接的后端</label>
+          <select id="execution-connection-backend"><option value="dsh">DSH</option><option value="codex">Codex</option><option value="claude">Claude Code</option></select>
+          <label for="execution-connection-value" id="execution-connection-label">DSH 连接链接</label>
+          <input id="execution-connection-value" type="password" autocomplete="off" spellcheck="false" style="width:100%;font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:8px"
+            aria-describedby="execution-connection-help" placeholder="http://127.0.0.1:端口/?token=…">
+          <p id="execution-connection-help" class="muted">从启动 DSH 的终端复制完整连接链接，不是浏览器里的 DSH 首页。模型与文件权限由 DSH 管理。</p>
+          <label id="execution-connection-dsh-permissions"><input id="execution-connection-dsh-allow" type="checkbox">
+            允许 DSH 按它自己的文件权限运行（Ordin 无法限制为只读或仅任务目录）</label>
+          <p id="execution-connection-summary" class="muted" role="status"></p>
+          <p id="execution-connection-version" class="muted" role="status">当前连接版本：未知</p>
+          <div class="row">
+            <button class="btn small" id="execution-connection-save" type="button">测试并保存</button>
+            <button class="btn small" id="execution-connection-refresh" type="button">刷新连接摘要</button>
+            <span id="execution-connection-result" class="muted" role="status"></span>
+          </div>
+        </div>
         <div class="set-sec" id="sec-inbox">
           <div class="row"><b>收件目录</b>
             <button class="btn small" style="margin-left:auto" data-sec="inbox">保存这一区</button></div>
@@ -782,7 +805,7 @@
           <button class="btn" id="desk-save-config">保存连接与默认模型</button>
         </div>
       </div>
-        <p class="muted" id="desk-config-hint" style="font-size:12px;margin-top:4px"></p>
+        <p class="muted" id="desk-config-hint" role="status" style="font-size:12px;margin-top:4px"></p>
       </details>
     </section>
 
@@ -1004,7 +1027,7 @@
         [/NetworkError|Failed to fetch/, '网络连接失败，检查宿主是否在运行'],
       ]
       const zh = zhMap.find(([re]) => re.test(raw))
-      throw new Error(zh ? `${zh[1]}（${raw}）` : raw)
+      throw Object.assign(new Error(zh ? `${zh[1]}（${raw}）` : raw), { status: response.status })
     }
     return body
   }
@@ -4224,10 +4247,131 @@ WantedBy=default.target
         ? result.backend + ' 检查通过；真实任务结果仍以执行回执为准。'
         : result.backend + ' 暂不可用：' + (result.problems ?? []).join('；')
     } catch (error) {
-      output.textContent = '检查失败：' + error.message
+      output.textContent = '连接检查未取得结果：' + error.message + '。请检查 Ordin 服务后手动再检查。'
     } finally { button.disabled = false }
   }
   $('execution-check').addEventListener('click', checkExecutionTool)
+
+  // Connection credentials never enter the general settings document or its JSON editor.
+  const loadExecutionConnections = (() => {
+    const backend = $('execution-connection-backend')
+    const input = $('execution-connection-value')
+    const label = $('execution-connection-label')
+    const help = $('execution-connection-help')
+    const permission = $('execution-connection-dsh-permissions')
+    const allow = $('execution-connection-dsh-allow')
+    const summary = $('execution-connection-summary')
+    const version = $('execution-connection-version')
+    const button = $('execution-connection-save')
+    const result = $('execution-connection-result')
+    if (!backend || !input || !label || !help || !permission || !allow || !summary || !button || !result) return async () => {}
+
+    const tools = { dsh: 'DSH', codex: 'Codex', claude: 'Claude Code' }
+    const loopbackUrl = value => {
+      if (typeof value !== 'string') return null
+      try {
+        const u = new URL(value)
+        return ['http:', 'https:'].includes(u.protocol) && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname)
+          && !u.username && !u.password ? u : null
+      } catch { return null }
+    }
+    const absolutePath = value => /^(?:\/|[A-Za-z]:[\\/])/.test(value) && !/[\x00-\x1f\x7f]/.test(value)
+    let connections
+    let restartRequired = false
+    let generation = 0
+    const renderSummary = () => {
+      const key = backend.value
+      const id = connections?.[key]?.connectionId
+      if (version) {
+        const known = connections?.[key]?.configured === true && typeof id === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)
+        version.textContent = '当前连接版本：' + (known ? id : '未知')
+      }
+      button.disabled = restartRequired
+      if (restartRequired) { summary.textContent = "Ordin 还在运行旧版本。请在启动 Ordin 的终端按 Ctrl+C，再用原命令启动，随后刷新本页。DSH 不需要重启。"; return }
+      const entry = connections?.[key]
+      if (entry?.configured === false) { summary.textContent = '尚未配置连接'; return }
+      if (entry?.configured !== true) { summary.textContent = '读取连接摘要失败或尚无响应。请手动刷新连接摘要。'; return }
+      // Even a mistakenly returned DSH connect URL must never become visible in the panel.
+      const u = key === 'dsh' ? loopbackUrl(entry.address) : null
+      const detail = key === 'dsh'
+        ? (u?.pathname === '/' && !u.search && !u.hash ? u.origin : '')
+        : (typeof entry.binary === 'string' ? entry.binary : '')
+      summary.textContent = '已配置连接' + (detail ? ' · ' + detail : '')
+    }
+    backend.addEventListener('change', () => {
+      // Clear before changing type, so a pasted token never becomes a visible CLI path.
+      input.value = ''
+      const key = backend.value
+      const dsh = key === 'dsh'
+      allow.checked = false
+      permission.classList.toggle('hidden', !dsh)
+      input.type = dsh ? 'password' : 'text'
+      input.placeholder = dsh ? 'http://127.0.0.1:端口/?token=…' : '留空自动检测'
+      label.textContent = dsh ? 'DSH 连接链接' : tools[key] + ' 可执行文件路径（可选）'
+      help.textContent = dsh
+        ? '从启动 DSH 的终端复制完整连接链接，不是浏览器里的 DSH 首页。模型与文件权限由 DSH 管理。'
+        : '留空时自动检测 ' + key + '。也可填写可执行文件的绝对路径；不要填写参数或 shell 命令。'
+      result.textContent = ''
+      renderSummary()
+    })
+    button.addEventListener('click', async () => {
+      const key = backend.value
+      if (button.disabled || !Object.hasOwn(tools, key)) return
+      const value = input.value.trim()
+      if (key === 'dsh') {
+        const u = loopbackUrl(value)
+        if (u?.pathname === '/' && !u.search && !u.hash) {
+          result.textContent = '你粘贴的是 DSH 首页地址。请到启动 DSH 的终端复制带 ?token=… 的完整链接。'
+          return
+        }
+        if (!u || (u.pathname !== '/' && u.pathname !== '/connect') || u.hash || u.searchParams.getAll('token').length !== 1 || !u.searchParams.get('token')?.trim()) {
+          result.textContent = '请粘贴 DSH 终端显示的完整本机链接（带 ?token=…）。'
+          return
+        }
+        if (!allow.checked) {
+          result.textContent = '请先确认允许 DSH 使用它自己的文件权限。'
+          return
+        }
+      } else if (value && !absolutePath(value)) {
+        result.textContent = '请留空以自动检测，或填写可执行文件的绝对路径（不是 shell 命令）。'
+        return
+      }
+      ++generation
+      button.disabled = backend.disabled = input.disabled = allow.disabled = true
+      result.textContent = '正在测试连接…'
+      try {
+        const body = key === 'dsh' ? { value, allowDshPermissions: true } : { value }
+        const data = await put('execution/connections/' + key, body)
+        if (data?.[key]?.configured !== true) throw new Error('Invalid connection summary')
+        connections = data
+        if (key === 'dsh') { input.value = ''; allow.checked = false }
+        renderSummary()
+        result.textContent = '连接测试通过，已保存。当前运行回合不会迁移。后续启动或续接按当时配置准备，历史归属以任务记录为准。'
+      } catch {
+        // The API error can include the submitted URL. Never render it verbatim.
+        result.textContent = key === 'dsh'
+          ? '连接保存结果未知。输入仍保留。请确认 DSH 正在运行，先刷新连接摘要核对，再决定是否重试。'
+          : '连接保存结果未知。输入仍保留。请检查工具安装、登录或可执行文件路径，先刷新连接摘要核对，再决定是否重试。'
+      } finally { button.disabled = backend.disabled = input.disabled = allow.disabled = false }
+    })
+    const readSummary = async () => {
+      if (button.disabled && !restartRequired) return
+      const request = ++generation
+      try {
+        const data = await api('execution/connections')
+        if (request !== generation) return
+        connections = data
+        restartRequired = false
+      } catch (error) {
+        if (request !== generation) return
+        connections = undefined
+        restartRequired = error.status === 404 || error.status === 501
+      }
+      renderSummary()
+    }
+    $('execution-connection-refresh')?.addEventListener('click', readSummary)
+    return readSummary
+  })()
 
   const loadSettings = () => {
     $('settings').value = JSON.stringify(state?.settings ?? {}, null, 2)
@@ -4236,6 +4380,7 @@ WantedBy=default.target
     $('settings-error').textContent = ''
     renderSections()
     markDirty()
+    void loadExecutionConnections()
   }
 
   const loadPrompts = async () => {
@@ -5081,6 +5226,7 @@ WantedBy=default.target
   $('home-start').addEventListener('click', () => show('chat'))
   $('start-discuss').addEventListener('click', () => show('chat'))
   $('home-tasks').addEventListener('click', () => friendlyNavigate('workspace'))
+  $('home-assets').addEventListener('click', () => show('assets'))
   const classifyHomeTicket = task => {
     if (task.endedReason !== undefined || task.outcome !== undefined) return { key:'ended-unverified', label:'已结束，验收结果待确认', action:'查看结果', group:'ended' }
     if (task.preparationFailed) return { key:'preparation-failed', label:'准备失败，尚未启动', action:'查看原因并处理', group:'attention' }
@@ -5113,7 +5259,7 @@ WantedBy=default.target
       homeError = ''; $('home-inbox-error').textContent = ''
     } catch (error) {
       if (generation !== homeGeneration) return
-      homeError = '暂时读不到任务，保留上次内容；请重试：' + error.message
+      homeError = '读取任务失败：' + error.message + '。保留上次内容；请点击「刷新任务」重新读取。'
       $('home-inbox-error').textContent = homeError
     }
   }
@@ -5123,7 +5269,7 @@ WantedBy=default.target
     await refreshHomeInbox()
     try { const model = await api('model/config'); const execution = await api('execution/status');
       $('home-readiness').replaceChildren(document.createTextNode((model.configuredKey ? '对话模型：'+model.defaultModel : '开始前，请先在设置中检查模型和密钥。')+' · '+(execution.health?.ok ? '执行工具协议检查通过，真实任务以执行回执为准。' : '执行工具尚未确认可用，仍可先整理需求。')), el('button',{class:'linklike',onclick:()=>show('settings')}, ' 打开设置'))
-    } catch(error) { $('home-readiness').textContent = '配置状态暂时无法读取；请到设置中检查：'+error.message }
+    } catch(error) { $('home-readiness').replaceChildren(document.createTextNode('读取配置状态失败：' + error.message + '。'), el('button',{class:'linklike',onclick:()=>show('settings')}, '打开设置')) }
   }
   void loadFriendlyHome()
   void loadRecipes()
@@ -5329,7 +5475,7 @@ WantedBy=default.target
         savedModelIds=[...models]; savedDefaultModel=draft.model
         hint.textContent=library?'已保存 '+models.length+' 个模型，可在聊天中选择。':'连接与默认模型已保存。'
         renderModelLibrary();toast(hint.textContent)
-      } catch(e) {hint.textContent='保存失败：'+e.message;toast(e.message)}
+      } catch(e) {hint.textContent='模型配置保存结果未知：'+e.message+'。输入和选择已保留，请先核对当前配置，再决定是否重新保存。'}
       finally {button.textContent=library?'保存已选模型':'保存连接与默认模型';button.disabled=false}
     }
     $('desk-save-config').onclick=()=>save(false)
@@ -5343,7 +5489,7 @@ WantedBy=default.target
         const body=await api(route,{method:'POST',body:JSON.stringify(modelDraft())})
         if(route==='model/models') {modelCandidates=[...new Set([...body.models,...selectedModels])];renderModelLibrary();hint.textContent='获取到 '+body.models.length+' 个模型。勾选需要的模型，然后点击“保存已选模型”。'}
         else hint.textContent='连接成功：'+body.model
-      }catch(e){hint.textContent='失败：'+e.message}finally{button.disabled=false}
+      }catch(e){hint.textContent=(route==='model/models'?'读取模型列表失败：':'连接测试失败：')+e.message+'。输入仍保留，请检查连接参数后手动再试。'}finally{button.disabled=false}
     }
     $('desk-list-models').addEventListener('click',()=>action('model/models'))
     $('desk-test-connection').addEventListener('click',()=>action('model/test'))

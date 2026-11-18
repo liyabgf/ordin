@@ -45,6 +45,7 @@ aside{min-width:0;padding:22px 16px;display:flex;flex-direction:column;gap:18px;
 .readiness{flex:0 0 100%;color:var(--muted);font-size:12px}
 #workspace{min-height:0;padding:0}
 #log{flex:1;min-height:0;overflow:auto;padding:24px 28px}
+#log:focus-visible{outline:3px solid var(--accent);outline-offset:-3px}
 footer,.workspace>header{flex:none}
 .welcome{flex:none}
 #log,.welcome{width:min(820px,100%);margin:0 auto}
@@ -61,7 +62,9 @@ footer,.workspace>header{flex:none}
 .msg.ordin .bubble{background:transparent;border-color:transparent;padding-left:0}
 .task-card{width:min(720px,100%);margin:10px 0 18px;padding:14px 16px;border:1px solid var(--line);border-radius:8px;background:#fff}
 .task-card a{display:inline-block;margin-top:8px}
-.working,#send-retry{width:min(820px,100%);margin:0 auto 10px;color:var(--muted)}
+.working,#send-feedback,.send-recovery{width:min(820px,100%);margin:0 auto 10px;color:var(--muted)}
+.send-recovery{display:flex;flex-wrap:wrap;gap:8px}.composer-label{display:block;width:min(820px,100%);margin:0 auto 4px}.task-card,#conversation-title,.asset-chip,#conversation-error,.error{overflow-wrap:anywhere}.workspace>header label{min-width:0}
+.error:empty{display:none}
 .error{width:min(820px,100%);margin:10px auto;padding:10px 12px;border-left:3px solid var(--danger);background:#fbefee;color:#6d302d}
 footer{padding:12px clamp(16px,4vw,56px) 16px;border-top:1px solid var(--line);background:#fff}
 .composer{width:min(820px,100%);display:flex;align-items:flex-end;gap:10px;margin:0 auto}
@@ -69,14 +72,18 @@ footer{padding:12px clamp(16px,4vw,56px) 16px;border-top:1px solid var(--line);b
 .hint{width:min(820px,100%);margin:5px auto 0;color:var(--muted);font-size:12px}
 .asset-tools{width:min(820px,100%);margin:0 auto 7px}.asset-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}.asset-chip{display:inline-flex;align-items:center;gap:6px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;font-size:12px}.asset-chip button{min-height:24px;padding:0 5px}.asset-picker{width:min(820px,100%);margin:0 auto 7px;padding:8px;border:1px solid var(--line);background:#fff}.asset-picker input{width:100%}.asset-results{max-height:180px;overflow:auto}.asset-results button{width:100%;text-align:left;margin-top:4px}.asset-error{color:var(--danger);font-size:12px}
 #conversation-error{color:var(--danger);font-size:12px}
-@media(max-width:760px){.shell{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
-aside{height:auto;max-height:35dvh;padding:10px 12px;gap:8px;border-right:0;border-bottom:1px solid var(--line)}
+@media(max-width:760px),(max-height:600px){.shell{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto}
+aside{height:auto;padding:10px 12px;gap:8px;border-right:0;border-bottom:1px solid var(--line)}
 .side-head{flex-direction:row;align-items:center;justify-content:space-between}
 #conversation-list{min-height:40px;max-height:16dvh}
 .advanced{margin-top:0}
-.workspace{height:65dvh;min-height:430px}
+.workspace{height:auto;overflow:visible}
+#log{overflow:visible}
+.welcome{padding:16px 14px}
 .workspace>header{padding:8px 12px;gap:8px}
-#chat-model{max-width:170px}
+#chat-model{min-width:0;max-width:min(170px,60vw)}
+.workspace>header details>div{position:static;min-width:0;box-shadow:none}
+.composer{flex-wrap:wrap}
 #workspace{padding:0}
 #log{padding:16px 14px}
 .welcome h1{font-size:23px}
@@ -92,15 +99,15 @@ footer{padding:9px 12px 12px}
     <div class="side-head"><b>对话历史</b><button id="conversation-new" type="button">＋ 新对话</button></div>
     <div class="history-tools"><button id="conversation-refresh" type="button" title="刷新对话列表">刷新</button><button id="history-retry" type="button" title="重新读取消息">重试历史</button><button id="history-older" type="button" hidden>更早消息</button></div>
     <nav id="conversation-list" aria-label="对话列表"></nav>
-    <details class="advanced"><summary>高级工具</summary><div class="task-continue"><input id="task-id" type="text" aria-label="任务 ID" placeholder="完整任务 ID"><button id="continue-task" type="button">在新对话中查看任务</button></div></details>
+    <details class="advanced"><summary>高级工具</summary><div class="task-continue"><label for="task-id">任务 ID</label><input id="task-id" type="text" placeholder="完整任务 ID"><button id="continue-task" type="button">带着任务上下文开启新对话</button></div></details>
     <div id="conversation-error" role="alert" aria-live="polite"></div>
   </aside>
   <section class="workspace" id="workspace">
-    <header><b>Ordin</b><span id="conversation-title"></span><input id="conversation-title-input" aria-label="对话标题" maxlength="200" hidden><span class="header-spacer"></span><label>模型 <select id="chat-model"><option value="">使用默认模型</option></select></label><details><summary>更多</summary><div class="more-actions"><button id="conversation-rename" type="button">重命名</button><button id="conversation-archive" type="button">归档</button><button id="conversation-delete" type="button">删除</button><button id="settings-open" type="button">对话与执行设置</button></div></details><span class="readiness" id="readiness-status" role="status">正在检查设置…</span></header>
-    <section class="welcome" id="welcome" hidden><div class="mark" aria-hidden="true">✦</div><h1 id="welcome-title">聊聊想法，或交代一件事</h1><p>我是 Ordin。可以帮你理清思路、规划工作，把需要推进的事变成可跟进的任务。</p><div class="examples"><button id="example-summarize" class="example" type="button">总结一段内容</button><button id="example-plan" class="example" type="button">梳理工作计划</button><button id="example-explain" class="example" type="button">一起分析问题</button></div></section>
-    <main id="log" aria-live="polite"></main>
-    <div class="working" id="working" role="status" hidden>Ordin 正在思考并处理你的消息…</div><button id="send-retry" type="button" hidden>重试这条消息</button>
-    <footer><div class="asset-tools"><div id="asset-chips" class="asset-chips" aria-label="已选资产"></div><button id="asset-open" type="button">添加资产</button><div id="asset-picker" class="asset-picker" hidden><input id="asset-query" type="search" placeholder="搜索资产" aria-label="搜索资产"><div id="asset-results" class="asset-results"></div><div id="asset-error" class="asset-error" role="alert"></div></div></div><div class="composer"><textarea id="input" aria-label="消息" placeholder="说点什么，或交代一件事（Enter 发送，Shift+Enter 换行）"></textarea><button id="send" type="button">发送</button></div><div class="hint" id="hint">Enter 发送 · Shift+Enter 换行 · 草稿自动保存</div></footer>
+    <header><b>Ordin</b><span id="conversation-title"></span><input id="conversation-title-input" aria-label="对话标题" maxlength="200" hidden><span class="header-spacer"></span><label for="chat-model">模型 <select id="chat-model"><option value="">使用默认模型</option></select></label><details><summary>更多</summary><div class="more-actions"><button id="conversation-rename" type="button">重命名</button><button id="conversation-archive" type="button">归档</button><button id="conversation-delete" type="button">删除</button><button id="settings-open" type="button">对话与执行设置</button></div></details><span class="readiness" id="readiness-status" role="status">正在检查设置…</span></header>
+    <section class="welcome" id="welcome" hidden><div class="mark" aria-hidden="true">✦</div><h1 id="welcome-title">聊聊想法，或交代一件事</h1><p>先讨论想法、梳理计划；想让 Ordin 执行时，请说清要交办的工作和预期结果。创建成功后，可从任务卡查看进度。</p><div class="examples"><button id="example-summarize" class="example" type="button">总结一段内容</button><button id="example-plan" class="example" type="button">梳理工作计划</button><button id="example-explain" class="example" type="button">一起分析问题</button></div></section>
+    <main id="log" role="log" aria-label="对话消息" tabindex="0"></main>
+    <div class="working" id="working" role="status" hidden>Ordin 正在思考并处理你的消息…</div><div class="error" id="send-feedback" role="alert"></div><div class="send-recovery" id="send-recovery" hidden><button id="send-retry" type="button">读取对话记录</button><a id="review-tasks" href="/ordin/?tab=workspace">查看任务工作台</a></div>
+    <footer><div class="asset-tools"><div id="asset-chips" class="asset-chips" aria-label="聊天草稿已选资产"></div><button id="asset-open" type="button">添加资产</button><div id="asset-picker" class="asset-picker" hidden><input id="asset-query" type="search" placeholder="搜索资产" aria-label="搜索资产"><div id="asset-results" class="asset-results"></div><div id="asset-error" class="asset-error" role="alert"></div></div></div><label class="composer-label" for="input">消息</label><div class="composer"><textarea id="input" aria-describedby="hint" placeholder="说点什么，或交代一件事"></textarea><button id="send" type="button">发送</button></div><div class="hint" id="hint">Enter 发送 · Shift+Enter 换行。明确交办后，若创建成功，可从任务卡跟进。</div></footer>
   </section>
 </div>
 <script>
@@ -126,7 +133,12 @@ footer{padding:9px 12px 12px}
   const taskIdInput = document.getElementById("task-id")
   const continueTask = document.getElementById("continue-task")
   const welcome = document.getElementById("welcome"), workspace = document.getElementById("workspace"), working = document.getElementById("working"), retry = document.getElementById("send-retry"), readiness = document.getElementById("readiness-status")
-  let failedText = ""
+  const sendFeedback = document.getElementById("send-feedback"), sendRecovery = document.getElementById("send-recovery")
+  const sendIssues = new Map()
+  const showSendIssue = () => {
+    sendFeedback.textContent = sendIssues.get(selectedId) || ""
+    sendRecovery.hidden = !sendFeedback.textContent
+  }
   let conversations = []
   const requested = new URLSearchParams(window.location.search)
   let selectedId = requested.get("conversation") || localStorage.getItem(SELECTED_KEY) || ""
@@ -218,7 +230,8 @@ footer{padding:9px 12px 12px}
     const query = before ? "?before=" + encodeURIComponent(before) + "&limit=50" : "?limit=50"
     const result = await api("conversations/" + encodeURIComponent(id) + "/messages" + query)
     if (id !== selectedId || token !== generation) return
-    const messages = result.messages || []
+    if (!Array.isArray(result.messages)) throw new Error("历史响应格式不正确")
+    const messages = result.messages
     const existing = before ? [...log.children] : []
     log.replaceChildren()
     for (const message of messages) add(message.role === "ordin" || message.role === "assistant" ? "ordin" : "user", message.content ?? message.text ?? "")
@@ -240,10 +253,10 @@ footer{padding:9px 12px 12px}
     input.value = drafts[id] || ""
     selectedAssets = Array.isArray(assetSelections[id]) ? assetSelections[id] : []; renderAssetChips()
     ++assetSearchGeneration; if (assetPicker) assetPicker.hidden = true; assetResults?.replaceChildren()
-    failedText = ""; retry.hidden = true
+    showSendIssue()
     log.replaceChildren(); setError(""); renderList(); updateControls()
     try { await loadHistory(id, token, null) }
-    catch (error) { if (id === selectedId && token === generation) { setError("读取历史失败：" + error.message); updateControls() } }
+    catch (error) { if (id === selectedId && token === generation) { setError("读取历史失败：" + error.message + "。草稿仍在，请点击「重试历史」；不会发送消息。"); updateControls() } }
   }
   const refreshList = async () => {
     if (listing) return
@@ -253,7 +266,8 @@ footer{padding:9px 12px 12px}
     try {
       const result = await api("conversations?includeArchived=true")
       if (id !== selectedId || token !== generation) return
-      conversations = result.conversations || []
+      if (!Array.isArray(result.conversations)) throw new Error("对话列表响应格式不正确")
+      conversations = result.conversations
       renderList()
       const current = conversations.find(c => c.id === selectedId)
       if (current) {
@@ -265,7 +279,7 @@ footer{padding:9px 12px 12px}
         else { log.replaceChildren(); updateControls() }
       } else if (conversations.length) await selectConversation(conversations[0].id)
       else await createConversation(true)
-    } catch (error) { if (id === selectedId && token === generation) setError("读取对话列表失败：" + error.message) }
+    } catch (error) { if (id === selectedId && token === generation) setError("读取对话列表失败：" + error.message + "。保留当前对话和草稿；请手动刷新对话列表。") }
     finally { listing = false }
   }
   const createConversation = async initial => {
@@ -280,7 +294,7 @@ footer{padding:9px 12px 12px}
       renderList()
       await selectConversation(conversation.id)
       if (!initial) input.focus()
-    } catch (error) { setError("新建对话失败：" + error.message) }
+    } catch (error) { setError("新建对话结果未知：" + error.message + "。请先刷新对话列表核对，不要直接再次新建。") }
     finally { creating = false; document.getElementById("conversation-new").disabled = false }
   }
   const mutateSelected = async (path, method, body) => {
@@ -296,12 +310,13 @@ footer{padding:9px 12px 12px}
         if (conversations.length) await selectConversation(conversations[0].id)
         else await createConversation(true)
       } else {
+        if (result.conversation?.id !== id) throw new Error("写入响应缺少对应对话")
         selected = result.conversation
         conversations = conversations.map(c => c.id === id ? selected : c)
         renderList(); updateControls()
       }
       setError("")
-    } catch (error) { if (id === selectedId && token === generation) setError("保存对话失败：" + error.message) }
+    } catch (error) { if (id === selectedId && token === generation) setError("对话变更结果未知：" + error.message + "。请先刷新对话列表核对，再决定是否修改。") }
   }
   const continueSelectedTask = async () => {
     const ticketId = taskIdInput.value.trim()
@@ -323,7 +338,7 @@ footer{padding:9px 12px 12px}
       taskIdInput.value = ""
       setError("")
     } catch (error) {
-      if (originId === selectedId && token === generation) setError("继续任务失败：" + error.message)
+      if (originId === selectedId && token === generation) setError("无法确认是否已开启对话：" + error.message + "。任务 ID 保留；先刷新对话列表核对。")
     } finally {
       continuing = false; updateControls()
     }
@@ -333,13 +348,20 @@ footer{padding:9px 12px 12px}
     if (!text || !target || target.archivedAt || !historyReady || loading) return
     const id = target.id, token = generation
     const submittedAssets = selectedAssets.slice(), refs = submittedAssets.map(assetRef)
-    failedText = input.value; retry.hidden = true
+    const submittedDraft = input.value
+    sendIssues.delete(id); showSendIssue()
     add("user", text)
     loading = true; updateControls()
     try {
       const body = await api("conversations/" + encodeURIComponent(id) + "/message", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text, ...(modelSelect.value ? { model: modelSelect.value } : {}), ...(refs.length ? { assetRefs: refs } : {}) }) })
-      const taskFailed = (body.toolOutcomes || []).some(outcome => outcome.name === "create_task" && !outcome.ok)
-      const taskCreated = (body.toolOutcomes || []).some(outcome => outcome.name === "create_task" && outcome.ok)
+      if (typeof body?.reply !== "string" && !Array.isArray(body?.sent) && !Array.isArray(body?.toolOutcomes)) throw new Error("未收到有效的发送回执")
+      const taskReceipts = (body.toolOutcomes || []).filter(outcome => outcome.name === "create_task").map(outcome => {
+        const data = outcome.data || {}
+        const ticketId = [data.id, data.ticketId].find(id => typeof id === "string" && id.trim())
+        return { outcome, data, ticketId }
+      })
+      const taskFailed = taskReceipts.some(({ outcome, ticketId }) => outcome.ok !== true || !ticketId)
+      const taskCreated = taskReceipts.some(({ outcome, ticketId }) => outcome.ok === true && !!ticketId)
       if (taskCreated && !taskFailed) {
         const current = id === selectedId ? selectedAssets : (assetSelections[id] || [])
         const remaining = current.filter(item => !submittedAssets.includes(item))
@@ -350,11 +372,9 @@ footer{padding:9px 12px 12px}
       for (const line of body.sent || []) add("ordin", String(line))
       if (!(body.sent || []).length) add("ordin", String(body.reply ?? ""))
       let taskError = false
-      for (const outcome of body.toolOutcomes || []) {
-        if (outcome.name !== "create_task") continue
-        if (!outcome.ok) { taskError = true; add("ordin", "任务创建失败：" + String(outcome.error || "请稍后重试"), "err"); continue }
-        const data = outcome.data || {}, ticketId = data.id || data.ticketId
-        if (!ticketId) continue
+      for (const { outcome, data, ticketId } of taskReceipts) {
+        if (outcome.ok !== true) { taskError = true; sendIssues.set(id, "未收到任务创建成功的回执：" + String(outcome.error || "原因未知") + "。草稿保留，请先查看任务工作台核对，再决定是否重新交办。"); continue }
+        if (!ticketId) { taskError = true; sendIssues.set(id, "任务回执缺少有效任务 ID。草稿保留，请先查看任务工作台核对。"); continue }
         const card = document.createElement("section"); card.className = "task-card"; card.setAttribute("data-task-id", String(ticketId))
         const description = document.createElement("div")
         description.textContent = "任务 " + ticketId + " · " + (data.title || "新任务") + "\n" + (data.state === "claimed" || data.dispatch?.state === "claimed" ? "已派发 · 执行方已领取" : "已创建 · 等待执行方领取")
@@ -362,12 +382,15 @@ footer{padding:9px 12px 12px}
         link.addEventListener("click", event => { if (window.parent !== window) { event.preventDefault(); window.parent.postMessage({type:"ordin:navigate",tab:"workspace",ticketId:String(ticketId)}, window.location.origin) } })
         card.append(description,link); log.appendChild(card)
       }
-      if (taskError) { drafts[id] = failedText; saveDrafts(); retry.hidden = false }
-      else { if (input.value === failedText) input.value = ""; drafts[id] = input.value; failedText = ""; saveDrafts() }
+      if (!taskError && input.value === submittedDraft) input.value = ""
+      drafts[id] = input.value; saveDrafts(); showSendIssue()
       const conversation = conversations.find(c => c.id === id)
       if (conversation) { conversation.title = body.title || conversation.title; conversation.lastMessageAt = body.lastMessageAt || conversation.lastMessageAt; renderList(); title.textContent = conversation.title }
       setError("")
-    } catch (error) { if (id === selectedId && token === generation) { add("ordin", "连接失败：" + error.message, "err"); retry.hidden = false; drafts[id] = input.value; saveDrafts() } }
+    } catch (error) {
+      sendIssues.set(id, "发送结果未知：" + error.message + "。请求可能已处理；草稿保留，请先读取对话记录并查看任务工作台，再决定是否重新发送。")
+      if (id === selectedId) showSendIssue()
+    }
     finally { if (id === selectedId && token === generation) { loading = false; updateControls(); input.focus() } }
   }
   const loadModels = async () => {
@@ -412,7 +435,8 @@ footer{padding:9px 12px 12px}
   continueTask.addEventListener("click", continueSelectedTask)
   input.addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); return submit() } })
   for (const [id, text] of [["example-summarize","请帮我总结下面的内容，并提炼关键要点：\n\n"],["example-plan","请帮我把这件事拆解成清晰的工作计划：\n\n"],["example-explain","请帮我分析这个问题，先问我需要补充的信息：\n\n"]]) document.getElementById(id).addEventListener("click", () => { input.value = text; if (selectedId) { drafts[selectedId] = text; saveDrafts() } input.focus() })
-  retry.addEventListener("click", () => { if (failedText) { input.value = failedText; return submit() } })
+  retry.addEventListener("click", () => selected && !loading && selectConversation(selected.id))
+  document.getElementById("review-tasks").addEventListener("click", event => { if (window.parent !== window) { event.preventDefault(); window.parent.postMessage({type:"ordin:navigate",tab:"workspace"}, window.location.origin) } })
   document.getElementById("settings-open").addEventListener("click", () => { if (window.parent !== window) window.parent.postMessage({type:"ordin:navigate",tab:"settings"}, window.location.origin); else window.location.href = "/ordin/#settings" })
   window.addEventListener("focus", loadModels)
   loadModels()

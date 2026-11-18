@@ -75,6 +75,8 @@ export interface WaitResult {
 const DEFAULT_GRACE_MS = 3000
 const DEFAULT_OUTPUT_LIMIT = 1024 * 1024
 
+type Outcome = Omit<WaitResult, 'id'>
+
 interface Entry {
   readonly rec: ProcessRecord
   child: ChildProcess | null
@@ -95,6 +97,7 @@ interface Entry {
   timeoutHit: boolean
   spawnError: string | null
   settled: boolean
+  closeOutcome: Outcome | null
   killTimer: NodeJS.Timeout | null
   timeoutTimer: NodeJS.Timeout | null
   dropAbortListener: (() => void) | null
@@ -109,7 +112,7 @@ export class ProcessRegistry {
   /**
    * Start a process and book it. The record is returned immediately and
    * mutated in place as output arrives and the run ends; wait() resolves
-   * once the child's stdio is closed and its exit is final.
+   * once the child's stdio is closed and any pending group escalation is done.
    */
   spawn(spec: SpawnSpec): ProcessRecord {
     const id = `proc-${++this.seq}`
@@ -152,6 +155,7 @@ export class ProcessRegistry {
       timeoutHit: false,
       spawnError: null,
       settled: false,
+      closeOutcome: null,
       killTimer: null,
       timeoutTimer: null,
       dropAbortListener: null,
@@ -223,7 +227,14 @@ export class ProcessRegistry {
               : entry.cancelRequested
                 ? 'canceled'
                 : 'exited'
-      this.settle(entry, { status, exitCode: code, exitSignal: signal })
+      const outcome = { status, exitCode: code, exitSignal: signal }
+      if (entry.killTimer !== null && this.groupMayExist(entry)) {
+        // Closing the leader's stdio does not mean the rest of the group is gone.
+        entry.closeOutcome = outcome
+        this.stopWatching(entry)
+      } else {
+        this.settle(entry, outcome)
+      }
     })
 
     if (spec.signal) {
@@ -305,21 +316,31 @@ export class ProcessRegistry {
 
   /** SIGTERM the group now, arm a single SIGKILL for after the grace window. */
   private beginKill(entry: Entry, graceMs: number): void {
-    if (entry.settled || entry.rec.status !== 'running') return
+    if (entry.settled || entry.killTimer !== null) return
+    entry.killTimer = setTimeout(() => {
+      entry.killTimer = null
+      this.signalGroup(entry, 'SIGKILL')
+      if (entry.closeOutcome !== null) this.settle(entry, entry.closeOutcome)
+    }, Math.max(0, graceMs))
+    // Keep the timer referenced: after close it may be the only handle keeping escalation alive.
     this.signalGroup(entry, 'SIGTERM')
-    if (entry.killTimer === null) {
-      entry.killTimer = setTimeout(() => {
-        entry.killTimer = null
-        if (!entry.settled && entry.rec.status === 'running') this.signalGroup(entry, 'SIGKILL')
-      }, Math.max(0, graceMs))
-      entry.killTimer.unref()
+  }
+
+  private groupMayExist(entry: Entry): boolean {
+    if (process.platform === 'win32' || entry.rec.pid === null) return false
+    try {
+      process.kill(-entry.rec.pid, 0)
+      return true
+    } catch (error) {
+      // Only ESRCH proves the group is gone; let escalation handle other failures.
+      return (error as NodeJS.ErrnoException).code !== 'ESRCH'
     }
   }
 
   /**
    * Signal the child's whole process group (the child is its leader, thanks
    * to detached spawn). ESRCH — the group already gone — is the expected
-   * race and is swallowed; anything else would have surfaced on 'error'.
+   * race and is swallowed; other signal failures are recorded.
    */
   private signalGroup(entry: Entry, signal: NodeJS.Signals): void {
     if (entry.rec.pid === null) return
@@ -380,21 +401,24 @@ export class ProcessRegistry {
     }
   }
 
-  private settle(
-    entry: Entry,
-    outcome: { status: ProcessStatus; exitCode: number | null; exitSignal: NodeJS.Signals | null },
-  ): void {
+  private stopWatching(entry: Entry): void {
+    if (entry.timeoutTimer !== null) {
+      clearTimeout(entry.timeoutTimer)
+      entry.timeoutTimer = null
+    }
+    entry.dropAbortListener?.()
+    entry.dropAbortListener = null
+  }
+
+  private settle(entry: Entry, outcome: Outcome): void {
     if (entry.settled) return
     entry.settled = true
     if (entry.killTimer !== null) {
       clearTimeout(entry.killTimer)
       entry.killTimer = null
     }
-    if (entry.timeoutTimer !== null) {
-      clearTimeout(entry.timeoutTimer)
-      entry.timeoutTimer = null
-    }
-    entry.dropAbortListener?.()
+    this.stopWatching(entry)
+    entry.closeOutcome = null
     const rec = entry.rec
     rec.status = outcome.status
     rec.exitCode = outcome.exitCode

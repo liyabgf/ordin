@@ -756,6 +756,10 @@ describe('worker events', () => {
     expect(text.endsWith('…')).toBe(true)
     expect(events.find(event => event.type === 'worker_tool')).toMatchObject({ detail: { name: 'read_file' } })
     expect(events.find(event => event.type === 'worker_tool')?.detail).not.toHaveProperty('content')
+    const ticket = context.store.tickets.get(id)!
+    expect(events.find(event => event.type === 'worker_tool')?.detail).toMatchObject({
+      assignmentId: ticket.assignments.at(-1)!.id, attemptId: ticket.executionAttempt!.token, backend: 'dsh',
+    })
     expect(events.find(event => event.type === 'worker_usage')?.detail?.usage).toEqual({ input: 17, output: 9 })
     expect(events.filter(event => event.type === 'worker_phase').at(-1)?.detail).toMatchObject({ phase: 'report', reportState: 'progress' })
   })

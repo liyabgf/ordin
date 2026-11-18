@@ -18,6 +18,7 @@ import { DshDriver } from './drivers/dsh.ts'
 import { DshServiceDriver } from './drivers/dsh-service.ts'
 import { DriverRouter } from './drivers/router.ts'
 import { AvailableDriver } from './drivers/availability.ts'
+import { WorkerConnections } from './app/worker-connections.ts'
 
 const pkg = JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')) as { version: string }
 
@@ -64,14 +65,16 @@ export async function main(): Promise<number> {
   const proc = new ProcessRegistry()
   const backendHealth = app.health.entry('execution-backend')
   backendHealth.problem('正在检查执行工具；Ordin 可独立使用。')
-  const driver = new DriverRouter({
-    dsh: new AvailableDriver(process.env.ORDIN_DSH_URL
-      ? new DshServiceDriver({ baseUrl: process.env.ORDIN_DSH_URL, token: process.env.ORDIN_DSH_SERVICE_TOKEN ?? '' })
-      : new DshDriver(proc), app.health.entry('backend:dsh')),
-    codex: new AvailableDriver(new CodexDriver(proc), app.health.entry('backend:codex')),
-    claude: new AvailableDriver(new ClaudeDriver(proc), app.health.entry('backend:claude')),
-  }, () => app.store.settings().executor.backend)
-  const runtime: Runtime = createRuntime(app, { logger, driver, proc })
+  const connections = new WorkerConnections(config.stateDir, (backend, saved) => {
+    const driver = backend === 'dsh'
+      ? saved.dsh ? new DshServiceDriver({baseUrl:saved.dsh.address,token:saved.dsh.token,useServiceSettings:true})
+        : process.env.ORDIN_DSH_URL ? new DshServiceDriver({baseUrl:process.env.ORDIN_DSH_URL,token:process.env.ORDIN_DSH_SERVICE_TOKEN ?? ''}) : new DshDriver(proc)
+      : backend === 'codex' ? new CodexDriver(proc,saved.codex === undefined ? {} : {binary:saved.codex || 'codex'})
+        : new ClaudeDriver(proc,saved.claude === undefined ? {} : {binary:saved.claude || 'claude'})
+    return new AvailableDriver(driver, app.health.entry('backend:'+backend))
+  })
+  const driver = new DriverRouter(backend => connections.driver(backend), () => app.store.settings().executor.backend)
+  const runtime: Runtime = createRuntime(app, { logger, driver, proc, connections })
   const keepAlive = setInterval(() => {}, 1 << 30)
   const stop = async (): Promise<void> => {
     await proc.stopAll(250)
@@ -79,6 +82,8 @@ export async function main(): Promise<number> {
   }
   installSignalHandlers({ stop }, { onStopped: () => { clearInterval(keepAlive) } })
   try {
+    // Keep the panel available to repair the connection; WorkerConnections blocks dispatch meanwhile.
+    try { await connections.load() } catch { logger.warn('无法加载已保存的执行端连接，已暂停任务派发；请在设置中逐个重新连接。') }
     await runtime.start()
   } catch (error) {
     logger.error('ordin 组合根启动失败', error)

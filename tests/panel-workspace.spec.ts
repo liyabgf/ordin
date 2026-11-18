@@ -24,7 +24,8 @@ function fixture(search = '?ticket=t-wait') {
   const tabs = ['all', 'open', 'attention', 'ended'].map(value => { const e = new Element(); e.dataset.state = value; return e })
   get('tabs').children = tabs
   const tickets: any[] = [structuredClone(waiting), structuredClone(failed), structuredClone(completed)]
-  const events: Record<string, any[]> = {}; const progress: Record<string, any> = {}; const calls: any[] = []
+  const events: Record<string, any[]> = {}; const progress: Record<string, any> = {}; const calls: any[] = []; const timers = new Map<number,()=>void>(); let timerId=0
+  let deferredFiles: Promise<any> | null = null; const fileLists: Record<string, any[]> = {};
   let listError = false; let postError = false; let deferredList: Promise<any> | null = null; let deferredDetail: Promise<any> | null = null; let deferredPost: Promise<any> | null = null
   const fetch = vi.fn(async (url: string, options: any) => {
     calls.push([url, options]); const path = url.replace('/ordin/api/', '')
@@ -38,19 +39,76 @@ function fixture(search = '?ticket=t-wait') {
     if (action === 'progress') return response(progress[id] || { loaded: true, sessionId: 's', lastSaid: 'Preparing outline', recentTools: [{ name: 'read', at: 'now' }] })
     if (action?.startsWith('events')) return response({ events: events[id] || [] })
     if (action?.startsWith('file?')) return response({path:'report.md',text:true,base64:Buffer.from('你好 <script>alert(1)</script>').toString('base64')});
-    if (action === 'files') return response({ files: [{ path: 'report.md', size: 42, mtime: '2026-01-02', directory: false }], count: 1, truncated: false })
+    if (action === 'files') { if (deferredFiles) { const p=deferredFiles; deferredFiles=null; return p } return response({ files: fileLists[id] || [{ path: 'report.md', size: 42, mtime: '2026-01-02', directory: false }], count: 1, truncated: false }) }
     if (!action) { if (deferredDetail) { const p = deferredDetail; deferredDetail = null; return p } return response(ticket) }
     throw Error('unexpected route ' + path)
   })
-  const window: any = { parent: { postMessage: vi.fn() }, confirm: vi.fn(() => true) }
+  const window: any = { parent: { postMessage: vi.fn() }, confirm: vi.fn(() => true), setInterval: (fn:()=>void) => { timers.set(++timerId,fn); return timerId }, clearInterval: (id:number) => timers.delete(id) }
   const context: any = { document: { getElementById: get, createElement: () => new Element() }, window, location: { search, origin: 'http://ordin.test' }, fetch, URLSearchParams, console, atob, Uint8Array, TextDecoder }
   runInNewContext(script, context)
-  return { nodes, tabs, tickets, events, progress, calls, fetch, window, workspace: window.Workspace, errorList: (v = true) => { listError = v }, errorPost: (v = true) => { postError = v }, deferList: (p: Promise<any>) => { deferredList = p }, deferDetail: (p: Promise<any>) => { deferredDetail = p }, deferPost: (p: Promise<any>) => { deferredPost = p } }
+  return { nodes, tabs, tickets, events, progress, calls, fetch, timers, window, fileLists, deferFiles: (p:Promise<any>)=>{deferredFiles=p}, workspace: window.Workspace, tick: async()=>{for(const fn of timers.values())await fn()}, errorList: (v = true) => { listError = v }, errorPost: (v = true) => { postError = v }, deferList: (p: Promise<any>) => { deferredList = p }, deferDetail: (p: Promise<any>) => { deferredDetail = p }, deferPost: (p: Promise<any>) => { deferredPost = p } }
 }
 const titles = (f: ReturnType<typeof fixture>) => f.nodes.list.children.map(c => c.innerHTML).join(' ')
 const deferred = () => { let resolve!: (v: any) => void; const promise = new Promise<any>(r => { resolve = r }); return { promise, resolve } }
 
 describe('friendly workspace actual JavaScript', () => {
+  it('fetches final deliverables on the ending timer without resetting drafts or preview', async()=>{
+    const f=fixture();f.tickets[0]={...f.tickets[0],stage:'running',assignment:{id:'a',state:'running'}};f.fileLists['t-wait']=[];await f.workspace.init();
+    f.nodes['file-preview-close'].onclick();f.nodes.note.value='keep draft';f.nodes.answer.value='keep answer';f.nodes['file-preview'].hidden=false;f.nodes['file-preview-content'].textContent='keep preview';
+    f.tickets[0]={...f.tickets[0],stage:'done',ended:{outcome:'done'},assignment:{id:'a',state:'ended'}};
+    f.fileLists['t-wait']=[{path:'final-result.md',size:55}];const before=f.calls.length;await f.tick();
+    expect(f.calls.slice(before).map(([u])=>u)).toContain('/ordin/api/tickets/t-wait/files');expect(f.nodes.files.innerHTML).toContain('final-result.md');
+    expect(f.nodes.note.value).toBe('keep draft');expect(f.nodes.answer.value).toBe('keep answer');expect(f.nodes['file-preview'].hidden).toBe(false);expect(f.nodes['file-preview-content'].textContent).toBe('keep preview');
+    const after=f.calls.length;await f.tick();expect(f.calls.length).toBe(after);
+  })
+  it('fences late terminal file reads after selecting another task and retains old files on failure',async()=>{
+    const f=fixture();f.tickets[0]={...f.tickets[0],stage:'running',assignment:{id:'a',state:'running'}};await f.workspace.init();
+    f.tickets[0]={...f.tickets[0],stage:'done',ended:{outcome:'done'}};
+    const d=deferred();f.deferFiles(d.promise);const read=f.tick();
+    await vi.waitFor(() => expect(f.calls.filter(([url]) => url === '/ordin/api/tickets/t-wait/files')).toHaveLength(2));
+    await f.workspace.select('t-fail');d.resolve(response({files:[{path:'LATE-OLD.md',size:1}]}));await read;
+    expect(f.nodes.detail.innerHTML).toContain('Repair import');expect(f.nodes.files.innerHTML).not.toContain('LATE-OLD.md');
+    f.tickets[0]={...f.tickets[0],stage:'running',ended:undefined};await f.workspace.select('t-wait');
+    f.tickets[0]={...f.tickets[0],stage:'done',ended:{outcome:'done'}};f.deferFiles(Promise.resolve(response({error:'offline'},false)));await f.tick();
+    expect(f.nodes.files.innerHTML).toContain('report.md');expect(f.nodes.error.textContent).toContain('文件列表');expect(f.nodes.error.textContent).toContain('刷新');
+  })
+  it('retains evidence on timer read failure and rejects old assignment and attempt responses', async () => {
+    const f = fixture(); f.tickets[0].assignment = {id:'new',state:'running'}; f.tickets[0].stage='running';
+    f.tickets[0].executionFingerprint='new-fingerprint';
+    f.progress['t-wait']={assignment:{id:'new',state:'running'},executionFingerprint:'new-fingerprint',loaded:true,lastSaid:'CURRENT EVIDENCE',lastEventAt:'2026-01-01T00:00:00Z',backend:'dsh',connectionId:'opaque-fixture',lastEvent:{type:'worker_text'}};
+    await f.workspace.init();
+    expect(f.nodes.detail.innerHTML).toContain('最近执行事件：执行进展');
+    expect(f.nodes.detail.innerHTML).toContain('最近成功刷新：');
+    f.progress['t-wait']={...f.progress['t-wait'],assignment:{id:'old'},lastSaid:'STALE ASSIGNMENT'}; await f.tick();
+    expect(f.nodes.detail.innerHTML).toContain('CURRENT EVIDENCE');expect(f.nodes.detail.innerHTML).not.toContain('STALE ASSIGNMENT');expect(f.nodes.detail.innerHTML).toContain('保留上次进度');
+    f.progress['t-wait']={...f.progress['t-wait'],assignment:{id:'new'},executionFingerprint:'old-fingerprint',lastSaid:'STALE ATTEMPT'};await f.tick();
+    expect(f.nodes.detail.innerHTML).not.toContain('STALE ATTEMPT');
+    f.fetch.mockImplementationOnce(async()=>{throw Error('read offline')});await f.tick();
+    expect(f.nodes.detail.innerHTML).toContain('CURRENT EVIDENCE');expect(f.nodes.detail.innerHTML).toContain('读取失败');
+    const d=deferred();f.deferDetail(d.promise);const pending=f.tick();await f.workspace.select('t-fail');d.resolve(response({...waiting,assignment:{id:'new',state:'running'}}));await pending;
+    expect(f.nodes.detail.innerHTML).toContain('Repair import');expect(f.nodes.detail.innerHTML).not.toContain('CURRENT EVIDENCE');
+  })
+  it('registers one timer and remains idle for recovery and ended tasks, preserving drafts on response uncertainty', async()=>{
+    const f=fixture();await f.workspace.init();expect(f.timers.size).toBe(1);
+    const before=f.calls.length;await f.tick();expect(f.calls.length).toBe(before);
+    f.nodes.answer.value='retained draft';f.deferPost(Promise.reject(Error('response lost')));await f.nodes['answer-send'].onclick();
+    expect(f.nodes.answer.value).toBe('retained draft');expect(f.nodes.error.textContent).toContain('提交结果尚未确认');expect(f.nodes.error.textContent).not.toContain('未保存');
+    f.tickets[0].assignment={id:'a',state:'running'};f.tickets[0].recovery={state:'uncertain'};await f.workspace.select('t-wait');const recovery=f.calls.length;await f.tick();expect(f.calls.length).toBe(recovery);
+    await f.workspace.select('t-done');const ended=f.calls.length;await f.tick();expect(f.calls.length).toBe(ended);
+  })
+  it('polls persisted events and current DSH activity without stopping the task', async () => {
+    const f=fixture(); await f.workspace.init(); f.tickets[0]!.stage='running'; f.tickets[0]!.assignment={id:'a',state:'running'}; await f.workspace.select('t-wait')
+    f.tickets[0]!.stage='running'; f.tickets[0]!.assignment={id:'a',state:'running'}
+    f.progress['t-wait']={loaded:true,lastSaid:'Searched GPT-6.2 official references',recentTools:[{name:'web.search'}],assignment:{id:'a',state:'running'}}
+    f.events['t-wait']=[{id:'e1',type:'worker_tool',at:'2026-11-18T10:00:00Z',detail:{name:'web.search',assignmentId:'a',arguments:'PRIVATE'}},{id:'e2',type:'stop_result',at:'2026-11-18T10:00:01Z',detail:{cleanupOnly:true,ok:true}}]
+    expect(f.timers.size).toBe(1); const before=f.calls.length; await f.tick()
+    const delta=f.calls.slice(before); expect(delta.map(([url])=>url)).toEqual([
+      '/ordin/api/tickets/t-wait','/ordin/api/tickets/t-wait/progress','/ordin/api/tickets/t-wait/events?limit=100',
+    ])
+    expect(f.nodes.detail.innerHTML).toContain('Searched GPT-6.2 official references')
+    expect(f.nodes.detail.innerHTML).toContain('本轮工具：web.search'); expect(f.nodes.detail.innerHTML).not.toContain('PRIVATE'); expect(f.nodes.detail.innerHTML).not.toContain('任务收尾完成'); expect(f.nodes.detail.innerHTML).not.toContain('已停止'); expect(f.nodes.timeline.innerHTML).toContain('执行工具：web.search'); expect(f.nodes.timeline.innerHTML).not.toContain('PRIVATE')
+    expect(f.calls.some(([url,opts])=>url.endsWith('/stop')&&opts.method==='POST')).toBe(false)
+  })
   it('selects a pinned asset for an open task, preserves retry identity and refuses ended tasks',async()=>{
     const f=fixture();await f.workspace.init();await f.nodes['asset-search'].onclick();await f.nodes['asset-results'].children[0].onclick();
     expect(f.nodes['asset-selection'].textContent).toContain('Dataset · v2');f.errorPost(true);await f.nodes['asset-send'].onclick();

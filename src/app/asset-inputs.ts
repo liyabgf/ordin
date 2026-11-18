@@ -20,5 +20,11 @@ export async function addAssetInput(host:{engine:Engine;store:Store;assets?:Asse
   const next=host.engine.assetNote(ticketId,request.requestId,refs,request.text)
   const saved=next.inputs.find(item=>item.kind==='note' && item.requestId===request.requestId)!
   if(saved.kind!=='note')throw new AssetCatalogError(409,'Asset input receipt missing')
-  return {requestId:request.requestId,inputId:saved.id,assetRefs:saved.assetRefs,deliveryState:saved.deliveredAt?'delivered':next.ended?'not-delivered':'queued',message:saved.deliveredAt?'已送达执行端，不代表已读取':'已保存待投递；由执行端能力决定下一轮接收'}
+  const deliveryState = saved.deliveredAt ? 'delivered' : next.ended ? 'not-delivered' : 'queued'
+  const messages = {
+    delivered: '已送达执行端，不代表已读取',
+    'not-delivered': '任务已结束，未送达执行端',
+    queued: '已保存待投递；由执行端能力决定下一轮接收',
+  }
+  return {requestId:request.requestId,inputId:saved.id,assetRefs:saved.assetRefs,deliveryState,message:messages[deliveryState]}
 }
