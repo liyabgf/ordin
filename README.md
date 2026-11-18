@@ -19,7 +19,7 @@
 | [docs/20-execution-engineering.md](docs/20-execution-engineering.md) | **执行工程方案：任务卡级分解，派单按这里**（含验收命令与证据目录） |
 | [docs/00-vision.md](docs/00-vision.md) | 长期方向（个人数字人格 / 手机操作端）。**参考，不是当下目标** |
 
-背景调研：[Ordin 多后端可行性评估](docs/background/multiharness-feasibility-20261114.md)。
+背景与迁移说明见：[工程规划](docs/33-functional-execution-plan.md)、[迁移计划](docs/10-migration-plan.md)。
 
 ## 独立启动
 
