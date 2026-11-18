@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 const page=(name:string)=>readFileSync(new URL('../panel/'+name+'.html',import.meta.url),'utf8')
 describe('panel source and startup integrity',()=>{
   it('keeps complete page styles and JavaScript instead of tool output fragments',()=>{
-    for(const name of ['index','chat','workspace']) {
+    for(const name of ['index','chat','workspace','assets']) {
       const h=page(name)
       expect(h).not.toContain('line truncated')
       const css=h.split('<style>')[1]!.split('</style>')[0]!
