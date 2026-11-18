@@ -79,6 +79,34 @@ export class AssetCatalog {
     if (typeof selected.content !== 'string' || createHash('sha256').update(selected.content, 'utf8').digest('hex') !== ref.contentHash) throw new AssetCatalogError(409, 'Asset content hash mismatch')
     return { ref, content: selected.content }
   }
+  /** Metadata pinning is synchronous; object bytes must still be checked before dispatch. */
+  resolveMetadata(input: unknown): { ref: AssetRef; filename: string } {
+    const requested = typeof input === 'string' ? { id: input } : record(input)
+    if (Object.keys(requested).some(key => !['id','revision','contentHash'].includes(key)) || typeof requested.id !== 'string') throw new AssetCatalogError(400, 'Invalid asset reference')
+    const row = this.require(requested.id)
+    if (row.archived === true || row.deletedAt !== undefined || row.deleted !== undefined || row.status !== 'active') throw new AssetCatalogError(409, 'Asset unavailable: inactive, archived or deleted')
+    const selected = requested.revision === undefined || requested.revision === revision(row) ? row : history(row).find(item => item.revision === requested.revision)
+    if (!selected) throw new AssetCatalogError(409, 'Asset revision unavailable')
+    const storage = record(selected.storage)
+    if (!(row.ownerProfileId === 'default' && selected.storageVersion === 1 && storage.kind === 'managed-object') && !(record(selected.source).type === 'operator-import' && record(selected.source).actor === 'operator')) throw new AssetCatalogError(403, 'Managed object or explicit operator import required')
+    const ref = validateAssetRefs([{id:row.id,revision:revision(selected),contentHash:selected.contentHash}])[0]!
+    if (requested.contentHash !== undefined && requested.contentHash !== ref.contentHash) throw new AssetCatalogError(409, 'Asset hash mismatch')
+    const extension = String(record(selected.source).path ?? selected.name ?? '').match(/\.([a-zA-Z0-9]{1,10})$/)?.[1]?.toLowerCase()
+    return {ref, filename:'asset-'+ref.id+'-r'+ref.revision+'.'+(extension ?? 'txt')}
+  }
+  async resolveBytes(input: unknown): Promise<{ref:AssetRef;filename:string;bytes:Buffer}> {
+    const pinned = this.resolveMetadata(input)
+    const row = this.require(pinned.ref.id)
+    const selected = pinned.ref.revision === revision(row) ? row : history(row).find(item=>item.revision===pinned.ref.revision)!
+    const storage = record(selected.storage)
+    const bytes = storage.kind === 'managed-object' && selected.storageVersion === 1 && typeof storage.objectKey === 'string'
+      ? await new AssetObjects(this.stateDir).read(storage.objectKey)
+      : typeof selected.content === 'string' ? Buffer.from(selected.content,'utf8') : undefined
+    if (!bytes || createHash('sha256').update(bytes).digest('hex') !== pinned.ref.contentHash) throw new AssetCatalogError(409,'Asset content hash mismatch')
+    // Awaiting filesystem IO is a revocation window: enforce current state and pinned identity again.
+    this.resolveMetadata(pinned.ref)
+    return {...pinned,bytes}
+  }
   async content(id: string): Promise<{path:string; text:boolean; base64:string; mimeType:string; size:number}> {
     const row = this.require(id)
     if (row.deletedAt !== undefined || row.deleted !== undefined) throw new AssetCatalogError(409, 'Asset is deleted')

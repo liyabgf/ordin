@@ -297,6 +297,7 @@ header{max-width:1240px;margin:auto;padding:28px 28px 18px}h1{font-size:26px;mar
           $("archive-asset").onclick = toggleArchive;
           $("load-content").onclick = () => loadContent(a.id);
           $("preview-close").onclick = closePreview;
+          const use=document.createElement("button"); use.type="button";use.id="use-in-new-task";use.className="btn primary";use.textContent="添加到任务草稿";use.disabled=!a.managed || a.status!=="active" || a.archived===true;use.onclick=()=>window.parent?.postMessage({type:"ordin:use-asset",assetRef:{id:a.id,revision:a.revision,contentHash:a.contentHash}},location.origin);$("detail").appendChild(use);
         }
         async function refresh() {
           const generation = ++state.listGeneration;

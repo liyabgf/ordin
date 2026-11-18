@@ -25,6 +25,22 @@ async function fixture() {
 }
 const input = { text: 'hello catalog', name: 'Notes', description: 'operator notes', kind: 'document', tags: ['local'], mimeType: 'text/plain', contentKind: 'text' }
 describe('F2-B2 asset catalog real Runtime HTTP', () => {
+  it('persists pinned asset inputs idempotently and rejects unauthorized or changed requests',async()=>{
+    const f=await fixture();try{
+      const asset=(await f.request('assets/import','POST',input)).data;
+      const id=f.runtime.engine.createTicket({title:'Active consumer',text:'work'}).ticketId!;
+      const payload={requestId:'request-one',text:'Use notes',assetRefs:[{id:asset.id,revision:1,contentHash:asset.contentHash}]};
+      const first=await f.request('tickets/'+id+'/asset-inputs','POST',payload);expect(first.status).toBe(200);expect(first.data.deliveryState).toBe('queued');
+      const repeated=await f.request('tickets/'+id+'/asset-inputs','POST',payload);expect(repeated.data.inputId).toBe(first.data.inputId);expect(f.runtime.engine.require(id).inputs.filter(i=>i.kind==='note' && i.requestId==='request-one')).toHaveLength(1);
+      expect((await f.request('tickets/'+id+'/asset-inputs','POST',{...payload,text:'different'})).status).not.toBe(200);
+      expect((await f.request('tickets/'+id+'/asset-inputs','POST',{...payload,requestId:'bad-hash',assetRefs:[{...payload.assetRefs[0],contentHash:'0'.repeat(64)}]})).status).toBe(409);
+      expect((await f.request('tickets/'+id+'/asset-inputs','POST',{...payload,requestId:'path',assetRefs:[{path:'/etc/passwd'}]})).status).not.toBe(200);
+      f.runtime.engine.stopTicket(id,'stop');expect((await f.request('tickets/'+id+'/asset-inputs','POST',{...payload,requestId:'new-after-stop'})).status).toBe(409);
+      expect((await f.request('tickets/'+id+'/asset-inputs','POST',payload)).data.inputId).toBe(first.data.inputId);
+      const at=new Date().toISOString();f.runtime.store.conversations.save({id:'foreign',profileId:'other',createdAt:at,lastMessageAt:at});const ticket=f.runtime.engine.require(id);f.runtime.store.tickets.save({...ticket,conversationId:'foreign'});
+      expect((await f.request('tickets/'+id+'/asset-inputs','POST',payload)).status).toBe(403);
+    }finally{await f.close()}
+  });
   it('returns same-task provenance and explicit pinned-reference records without claiming use', async()=>{
     const f=await fixture();try{
       const source=await f.request('assets/import','POST',input);const id=f.runtime.engine.createTicket({title:'Reference consumer',text:'use asset'}).ticketId!;

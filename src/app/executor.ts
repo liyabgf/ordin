@@ -27,7 +27,7 @@ import { copyFile, lstat, mkdir, readFile, realpath, rm, stat, writeFile } from 
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import {
   key, latestAssignment, liveTicket, runningAssignment, slug, ticketStage, undelivered,
-  type Assignment, type Engine, type Executor, type Report, type Ticket,
+  type Assignment, type Engine, type Executor, type Report, type Ticket, type TicketInput,
 } from '../core/index.ts'
 import type { Settings } from '../core/policy.ts'
 import type { TicketEventType } from '../core/model.ts'
@@ -487,7 +487,7 @@ export class WorkerExecutor implements Executor {
   private currentLaunch(ticketId: string, assignmentId: string): Ticket | undefined {
     const ticket = this.host.store.tickets.get(ticketId)
     const assignment = ticket === undefined ? undefined : latestAssignment(ticket)
-    if (ticket === undefined || !liveTicket(ticket) || ticket.recovery !== undefined || assignment?.id !== assignmentId || assignment.state === 'ended') return undefined
+    if (ticket === undefined || ticket.deleted !== undefined || !liveTicket(ticket) || ticket.recovery !== undefined || assignment?.id !== assignmentId || assignment.state === 'ended') return undefined
     return ticket
   }
 
@@ -514,6 +514,12 @@ export class WorkerExecutor implements Executor {
 
   /** driver.prepare -> driver.launch (or driver.resume with the Ticket's saved session), then subscribe events. */
   private async startTurn(ticket: Ticket, assignment: Assignment, settings: Settings, session?: BackendSession): Promise<TurnRecord> {
+    const inputs = []
+    for (const input of ticket.inputs) {
+      inputs.push(input.deliveredAt === undefined ? await this.materializeInputAssets(ticket, assignment.id, input) : input)
+      this.requireCurrentInputLaunch(ticket.id, assignment.id)
+    }
+    ticket = { ...ticket, inputs }
     const base = this.workerSpec(ticket, assignment, settings)
     const backend = session?.backend ?? base.backend!
     let health: DriverHealth
@@ -533,9 +539,11 @@ export class WorkerExecutor implements Executor {
     }
     this.host.engine.annotate(ticket.id, dispatchEvidence)
     if (!health.ok) throw new WorkerUnavailable(`Worker ${backend} is unavailable: ${health.problems.join('; ') || 'probe failed'}`)
+    this.requireCurrentInputLaunch(ticket.id, assignment.id)
     const materialized = await materializeSkills(this.host.skills?.() ?? [], base.cwd, ticket.skillRefs ?? [])
+    this.requireCurrentInputLaunch(ticket.id, assignment.id)
     const spec: LaunchSpec = await this.host.driver.prepare({ ...base, prompt: base.prompt + (materialized.length === 0 ? '' : `\n\n${skillsPrompt(materialized)}`) }, session)
-    this.revalidateManagedAssets(ticket)
+    await this.revalidateManagedAssets(ticket)
     // prepare succeeded; re-check staleness BEFORE anything is launched (ordin's cleanupLateAgent becomes this:
     // nothing exists before launch, so there is nothing to clean up).
     if (this.currentLaunch(ticket.id, assignment.id) === undefined || this.host.closing() || this.host.lifetime.aborted) {
@@ -778,11 +786,12 @@ export class WorkerExecutor implements Executor {
   }
 
   /** Reject assets revoked or changed while asynchronous driver.prepare was running. */
-  private revalidateManagedAssets(ticket: Ticket): void {
-    if (ticket.assetRefs === undefined || ticket.assetRefs.length === 0) return
+  private async revalidateManagedAssets(ticket: Ticket): Promise<void> {
+    const refs = [...(ticket.assetRefs ?? []), ...undelivered(ticket).flatMap(input => input.kind === 'note' ? input.assetRefs ?? [] : [])]
+    if (refs.length === 0) return
     if (this.host.assets === undefined) throw new PrepareFailed('Managed asset service is unavailable')
-    for (const ref of ticket.assetRefs) {
-      try { this.host.assets.resolve(ref) }
+    for (const ref of refs) {
+      try { await this.host.assets.resolveBytes(ref) }
       catch (error) { throw new PrepareFailed('Managed asset ' + ref.id + '@' + ref.revision + ' refused before launch: ' + reason(error)) }
     }
   }
@@ -793,9 +802,8 @@ export class WorkerExecutor implements Executor {
     if (this.host.assets === undefined) throw new PrepareFailed('Managed asset service is unavailable')
     for (const ref of ticket.assetRefs) {
       try {
-        const selected = this.host.assets.resolve(ref)
-        const name = `asset-${ref.id}-r${ref.revision}.txt`
-        await this.sandbox.deliverAttachment(directory, name, Buffer.from(selected.content, 'utf8'))
+        const selected = await this.host.assets.resolveBytes(ref)
+        await this.sandbox.deliverAttachment(directory, selected.filename, selected.bytes)
       } catch (error) { throw new PrepareFailed(`Managed asset ${ref.id}@${ref.revision} refused: ${reason(error)}`) }
     }
   }
@@ -912,7 +920,7 @@ export class WorkerExecutor implements Executor {
         }
       }
     }
-    if ((ticket.assetRefs?.length ?? 0) > 0) lines.push('', '## Selected managed assets', ...ticket.assetRefs!.map(ref => `- attachments/asset-${ref.id}-r${ref.revision}.txt (SHA-256 ${ref.contentHash})`))
+    if ((ticket.assetRefs?.length ?? 0) > 0) lines.push('', '## Selected managed assets', ...ticket.assetRefs!.map(ref => `- attachments/${this.host.assets?.resolveMetadata(ref).filename ?? `asset-${ref.id}-r${ref.revision}.txt`} (SHA-256 ${ref.contentHash})`))
     if (ticket.attachments.length > 0) {
       lines.push('', '## Files that came with the request',
         'They are copied into `attachments/` inside your directory, so work from those copies:',
@@ -962,6 +970,26 @@ export class WorkerExecutor implements Executor {
    * Hand a running Assignment the Inputs that wait for it, one delivery each, so a retry after a crash repeats only
    * what did not arrive. A Ticket that waits for a person holds automated input until the person answered.
    */
+  private requireCurrentInputLaunch(ticketId: string, assignmentId: string): void {
+    if (this.currentLaunch(ticketId, assignmentId) === undefined || this.host.closing() || this.host.lifetime.aborted) throw new Later(PAUSED_RETRY_MS)
+  }
+
+  private async materializeInputAssets(ticket: Ticket, assignmentId: string, input: TicketInput): Promise<TicketInput> {
+    if (input.kind !== 'note' || !input.assetRefs?.length) return input
+    if (this.host.assets === undefined || ticket.execution === undefined) throw new Error('Managed input asset service or workspace is unavailable')
+    const files: string[] = []
+    for (const ref of input.assetRefs) {
+      const selected = await this.host.assets.resolveBytes(ref)
+      this.requireCurrentInputLaunch(ticket.id, assignmentId)
+      if (selected.filename !== basename(selected.filename)) throw new Error('Unsafe input asset filename')
+      const filename = input.id + '-' + selected.filename
+      await this.sandbox.deliverAttachment(ticket.execution.directory, filename, selected.bytes)
+      this.requireCurrentInputLaunch(ticket.id, assignmentId)
+      files.push('- attachments/' + filename + ' (SHA-256 ' + ref.contentHash + ')')
+    }
+    return { ...input, text: input.text + '\n\nSelected managed assets:\n' + files.join('\n') }
+  }
+
   private async deliverInputs(payload: InputPayload): Promise<void> {
     const { ticketId, assignmentId } = payload
     for (;;) {
@@ -981,13 +1009,19 @@ export class WorkerExecutor implements Executor {
         if (input.attachments?.length && ticket.execution?.directory !== undefined) {
           for (const srcPath of input.attachments) {
             try {
-              await this.sandbox.deliverAttachment(ticket.execution.directory, basename(srcPath), await readFile(srcPath))
+              const bytes = await readFile(srcPath)
+              this.requireCurrentInputLaunch(ticketId, assignmentId)
+              await this.sandbox.deliverAttachment(ticket.execution.directory, basename(srcPath), bytes)
+              this.requireCurrentInputLaunch(ticketId, assignmentId)
             } catch (attachErr) {
+              if (attachErr instanceof Later) throw attachErr
               this.host.logger.warn(`could not copy attachment ${srcPath} to Ticket ${ticketId.slice(0, 8)}: ${String(attachErr).slice(0, 80)}`)
             }
           }
         }
-        const promptText = `# Added to Ticket ${ticket.id}\n\n${authorOf(input).sentence}:\n\n${input.text}`
+        const preparedInput = await this.materializeInputAssets(ticket, assignmentId, input)
+        this.requireCurrentInputLaunch(ticketId, assignmentId)
+        const promptText = `# Added to Ticket ${ticket.id}\n\n${authorOf(input).sentence}:\n\n${preparedInput.text}`
         // The live turn takes the input by feed(). Between turns, the Ticket's saved session is resumed so the
         // SAME worker takes it — a running Assignment with no session at all is a failure, said out loud below.
         let record = this.turns.get(ticketId)
@@ -1001,6 +1035,7 @@ export class WorkerExecutor implements Executor {
           // The resume prompt already contains the pending inputs; never feed them a second time.
           return
         }
+        this.requireCurrentInputLaunch(ticketId, assignmentId)
         const fed = await record.turn.feed(promptText)
         if (fed.status === 'closed') {
           throw new Error(`the worker turn closed before the input arrived: ${fed.reason}`)

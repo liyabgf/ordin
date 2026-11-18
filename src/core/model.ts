@@ -541,6 +541,9 @@ export type TicketInput =
       /** Absolute paths of downloaded attachments (images, files) delivered with this input. */
       readonly attachments?: readonly string[] }
   | { readonly id: string; readonly kind: 'note'; readonly text: string; readonly at: string; readonly deliveredAt?: string; readonly by?: InputBy
+      /** Fixed managed asset versions selected for this note. */
+      readonly assetRefs?: readonly AssetRef[]
+      readonly requestId?: string
       /** Absolute paths of downloaded attachments (images, files) delivered with this note. */
       readonly attachments?: readonly string[] }
 

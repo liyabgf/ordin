@@ -84,7 +84,7 @@ main {padding:8px 16px 24px}
 <body>
 <header><div><div class="eyebrow">ORDIN / WORKSPACE</div><h1>我的任务</h1><div class="muted">进展、结果和需要你决定的事，都在这里。</div></div><details class="diagnostics"><summary>连接与执行状态</summary><div id="health" class="muted" aria-live="polite">正在读取配置状态…</div></details></header>
 <main><div id="error" class="error" role="alert" hidden></div><div class="toolbar"><input id="search" type="search" placeholder="搜索任务标题、摘要" aria-label="搜索任务"><div id="tabs" class="tabs" aria-label="筛选任务"><button data-state="all" aria-selected="true">全部</button><button data-state="open" aria-selected="false">进行中</button><button data-state="attention" aria-selected="false">需要我</button><button data-state="ended" aria-selected="false">已结束</button></div><button id="refresh" class="btn">刷新</button></div>
-<div class="layout"><section class="panel" aria-label="任务列表"><div class="list-heading"><h2>任务列表</h2><span id="count" class="muted"></span></div><div id="list" aria-live="polite">正在读取任务…</div><p class="muted">显示最近 200 项任务。</p></section><section class="panel" aria-label="任务详情"><div id="detail" aria-live="polite"><h2>从一项任务开始</h2><p class="muted">选择左侧的任务，查看它的最新进展。</p></div><div id="selected-content" hidden><div id="action-message" role="status" class="notice" hidden></div><div id="answer-area" class="section" hidden><div id="question" class="callout question"></div><label for="answer">你的回答</label><textarea id="answer" placeholder="补充信息，让这项工作继续"></textarea><button id="answer-send" class="btn primary">发送回答</button></div><div id="note-area" class="section"><label for="note">补充信息</label><p class="muted">把新要求或说明交给这项任务。</p><textarea id="note" placeholder="写下需要补充的内容"></textarea><button id="note-send" class="btn">发送补充</button></div><div class="section actions"><button id="continue" class="btn primary">围绕此任务继续对话</button><button id="retry" class="btn" hidden>重试任务</button><button id="stop" class="btn danger" hidden>请求停止</button><button id="dismiss" class="btn danger" hidden>从任务列表移除</button></div><div class="section"><h3>进展记录</h3><ol id="timeline" class="timeline"></ol></div><div class="section"><h3>交付物与文件</h3><p id="files-status" class="muted"></p><ul id="files"></ul><div id="file-preview" class="file-preview" hidden><div class="file-preview-head"><b id="file-preview-title"></b><button id="file-preview-close" class="btn" type="button">关闭预览</button></div><pre id="file-preview-content"></pre></div></div><details class="section"><summary>技术详情 · 标识、路径和原始状态</summary><pre id="technical"></pre></details></div></section></div></main>
+<div class="layout"><section class="panel" aria-label="任务列表"><div class="list-heading"><h2>任务列表</h2><span id="count" class="muted"></span></div><div id="list" aria-live="polite">正在读取任务…</div><p class="muted">显示最近 200 项任务。</p></section><section class="panel" aria-label="任务详情"><div id="detail" aria-live="polite"><h2>从一项任务开始</h2><p class="muted">选择左侧的任务，查看它的最新进展。</p></div><div id="selected-content" hidden><div id="action-message" role="status" class="notice" hidden></div><div id="answer-area" class="section" hidden><div id="question" class="callout question"></div><label for="answer">你的回答</label><textarea id="answer" placeholder="补充信息，让这项工作继续"></textarea><button id="answer-send" class="btn primary">发送回答</button></div><div id="note-area" class="section"><label for="note">补充信息</label><p class="muted">把新要求或说明交给这项任务。</p><textarea id="note" placeholder="写下需要补充的内容"></textarea><button id="note-send" class="btn">发送补充</button></div><div class="section" id="asset-input-area"><h3>补充资产</h3><p class="muted">选择固定版本作为补充资料；排队不代表执行端已读取。</p><input id="asset-query" type="search" placeholder="搜索可用资产" aria-label="搜索可用资产"><button id="asset-search" class="btn">查找资产</button><div id="asset-results"></div><p id="asset-selection" class="muted"></p><button id="asset-send" class="btn primary">添加到任务</button><p id="asset-delivery" class="muted" role="status"></p></div><div class="section actions"><button id="continue" class="btn primary">围绕此任务继续对话</button><button id="retry" class="btn" hidden>重试任务</button><button id="stop" class="btn danger" hidden>请求停止</button><button id="dismiss" class="btn danger" hidden>从任务列表移除</button></div><div class="section"><h3>进展记录</h3><ol id="timeline" class="timeline"></ol></div><div class="section"><h3>交付物与文件</h3><p id="files-status" class="muted"></p><ul id="files"></ul><div id="file-preview" class="file-preview" hidden><div class="file-preview-head"><b id="file-preview-title"></b><button id="file-preview-close" class="btn" type="button">关闭预览</button></div><pre id="file-preview-content"></pre></div></div><details class="section"><summary>技术详情 · 标识、路径和原始状态</summary><pre id="technical"></pre></details></div></section></div></main>
 <script>
 (function () {
   'use strict';
@@ -121,6 +121,17 @@ main {padding:8px 16px 24px}
     }
     if (!rows.length) $('list').textContent = state.tickets.length ? '没有找到符合条件的任务。试试其他关键词或状态。' : '还没有任务。可以从顶部导航进入对话，交代你的第一项工作。';
   }
+  const assetDrafts = {};
+  let assetQueryGeneration = 0;
+  async function searchAssetInputs() {
+    const id=state.selected, token=++assetQueryGeneration; if(!id)return;
+    try { const response=await api('assets?limit=100&query='+encodeURIComponent($('asset-query').value));if(id!==state.selected||token!==assetQueryGeneration)return; $('asset-results').replaceChildren();for(const asset of response.assets||[]){if(!asset.managed||asset.status!=='active'||asset.archived)continue;const b=document.createElement('button');b.className='btn';b.textContent=asset.name+' · v'+asset.revision;b.onclick=()=>{assetDrafts[id]={asset,requestId:null};$('asset-selection').textContent=asset.name+' · v'+asset.revision;};$('asset-results').appendChild(b);} } catch(e){if(id===state.selected)error(e);}
+  }
+  async function sendAssetInput() {
+    const id=state.selected,t=state.detail,draft=assetDrafts[id];if(!draft||!t||ended(t)||t.recovery||state.pending.has(id))return;
+    draft.requestId ||= 'asset-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);state.pending.add(id);controls();
+    try{const a=draft.asset;const receipt=await api('tickets/'+encodeURIComponent(id)+'/asset-inputs',{requestId:draft.requestId,assetRefs:[{id:a.id,revision:a.revision,contentHash:a.contentHash}],text:'请参考补充资产：'+a.name});if(assetDrafts[id]===draft)delete assetDrafts[id];if(id===state.selected){$('asset-selection').textContent='';$('asset-delivery').textContent=receipt.message||'已保存待投递；尚未确认执行端已读取';await select(id);}}catch(e){if(id===state.selected)error(e);}finally{state.pending.delete(id);if(id===state.selected)controls();}
+  }
   function controls() {
     const t = state.detail, pending = state.pending.has(state.selected);
     $('answer-send').disabled = pending || !t?.waitingForAnswer || Boolean(t?.recovery);
@@ -129,6 +140,7 @@ main {padding:8px 16px 24px}
     $('dismiss').hidden = !t?.recovery || ended(t); $('dismiss').disabled = pending || !t?.recovery || ended(t);
     $('stop').hidden = !t || ended(t) || Boolean(t.recovery); $('stop').disabled = pending || !t || ended(t) || state.notices[state.selected]?.stopping === true;
     $('continue').disabled = pending || !t;
+    $('asset-input-area').hidden=!t||ended(t)||Boolean(t.recovery);$('asset-send').disabled=pending||!t||ended(t)||Boolean(t.recovery);$('asset-search').disabled=pending||!t||ended(t)||Boolean(t.recovery);
     $('answer').disabled = pending; $('note').disabled = pending;
   }
   function renderDetail() {
@@ -146,6 +158,7 @@ main {padding:8px 16px 24px}
     for (const button of $('files').querySelectorAll?.('button[data-file]') || []) button.onclick = () => previewFile(button.dataset.file);
     $('files-status').textContent = state.files ? (state.files.files?.length ? (state.files.truncated ? '部分文件（列表已截断）' : '当前工作目录中的文件') + ' · 展示元数据' : '当前没有文件元数据。') : '文件列表暂不可用。';
     $('file-preview').hidden = true; $('file-preview-content').textContent = ''; $('technical').textContent = JSON.stringify({ ticket: t, progress: state.progress, events: state.events, files: state.files }, null, 2);
+    const assetInputs=(t.inputs||[]).filter(i=>i.assetRefs?.length);$('asset-delivery').textContent=assetInputs.map(i=>{const label=i.deliveredAt?'已送达执行端（不代表已读取）':ended(t)?'任务已结束，未送达':t.assignment?.deliveryError?'投递失败，等待重试':'已保存待投递／等待下一轮';return i.assetRefs.map(r=>r.id+' · v'+r.revision).join('、')+'：'+label;}).join('\n');
     controls();
   }
   function decodeBase64(value) { const bytes = Uint8Array.from(atob(value), c => c.charCodeAt(0)); return new TextDecoder().decode(bytes); }
@@ -158,6 +171,7 @@ main {padding:8px 16px 24px}
   async function select(id) {
     if (!state.tickets.some(t => t.id === id)) return;
     ++state.previewGeneration; $('file-preview').hidden = true;
+    ++assetQueryGeneration;$('asset-results').replaceChildren();$('asset-selection').textContent=assetDrafts[id]?.asset?.name||'';
     saveDraft(); const generation = ++state.detailGeneration; state.selected = id; state.detail = null; state.progress = null; state.events = []; state.files = null;
     const draft = state.drafts[id] || {}; $('answer').value = draft.answer || ''; $('note').value = draft.note || ''; $('selected-content').hidden = true; $('detail').textContent = '正在读取任务详情…'; controls(); renderList();
     const base = 'tickets/' + encodeURIComponent(id);
@@ -213,6 +227,7 @@ main {padding:8px 16px 24px}
     $('search').oninput = renderList;
     for (const button of $('tabs').children) button.onclick = () => { state.filter = button.dataset.state; for (const other of $('tabs').children) other.setAttribute('aria-selected', String(other === button)); renderList(); };
     $('refresh').onclick = refresh;
+    $('asset-search').onclick=searchAssetInputs;$('asset-send').onclick=sendAssetInput;
     $('answer').oninput = saveDraft; $('note').oninput = saveDraft;
     $('file-preview-close').onclick = () => { ++state.previewGeneration; $('file-preview').hidden = true; $('file-preview-content').textContent = ''; };
     $('answer-send').onclick = () => act('answer'); $('note-send').onclick = () => act('note'); $('stop').onclick = () => act('stop'); $('dismiss').onclick = () => act('dismiss'); $('retry').onclick = () => act('retry');

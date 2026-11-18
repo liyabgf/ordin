@@ -131,6 +131,9 @@ export interface CoordinatorHost {
   /** Cancel a Ticket and wait for the worker stop attempt to finish. */
   /** Trusted catalog; omitted means skillRefs cannot be selected. */
   readonly skills?: () => readonly SavedSkill[]
+  readonly assets?: AssetCatalog
+  /** Operator-selected immutable asset refs scoped to this one conversation message. */
+  readonly selectedAssetRefs?: readonly AssetRef[]
   readonly stopTask: (ticketId: string, reason: string) => Promise<{ readonly stopped: boolean; readonly finalState?: string; readonly error?: string }>
 }
 
@@ -319,16 +322,21 @@ export async function executeCoordinatorTool(
         if (estimatedBudgetMs !== undefined && (typeof estimatedBudgetMs !== 'number' || !Number.isSafeInteger(estimatedBudgetMs) || estimatedBudgetMs < 1 || estimatedBudgetMs > 86_400_000)) {
           return { name, ok: false, error: 'estimatedBudgetMs must be an integer from 1 to 86400000' }
         }
-        const rawAssets = args.assetRefs ?? []
+        const modelRefs = args.assetRefs ?? []
+        if (!Array.isArray(modelRefs)) throw new Error('assetRefs must be an array')
+        const rawAssets = [...(host.selectedAssetRefs ?? []), ...modelRefs].filter((ref,index,all)=>all.findIndex(item=>JSON.stringify(item)===JSON.stringify(ref))===index)
         if (!Array.isArray(rawAssets) || rawAssets.length > 32) throw new Error('assetRefs must contain at most 32 references')
         const assetRefs: AssetRef[] = []
         const internalIds: string[] = []
-        const catalog = new AssetCatalog(host.store, '')
+        const catalog = host.assets ?? new AssetCatalog(host.store, '')
         for (const requested of rawAssets) {
           const id = typeof requested === 'string' ? requested : (requested as Record<string, unknown> | null)?.id
           if (typeof id !== 'string') throw new Error('Invalid asset reference')
           const row = host.store.assets.get(id)
-          if ((row?.source as Record<string, unknown> | undefined)?.type === 'operator-import') assetRefs.push(catalog.resolve(requested).ref)
+          if (row?.storageVersion === 1 && (row?.storage as Record<string, unknown> | undefined)?.kind === 'managed-object') {
+            if (!host.assets) throw new Error('Managed asset object service unavailable')
+            assetRefs.push((await catalog.resolveBytes(requested)).ref)
+          } else if ((row?.source as Record<string, unknown> | undefined)?.type === 'operator-import') assetRefs.push(catalog.resolve(requested).ref)
           else {
             if (typeof requested !== 'string') throw new Error('Pinned reference requires a managed import')
             internalIds.push(id)
@@ -441,6 +449,7 @@ export function buildSystemContext(host: CoordinatorHost, conversationId: string
     '一条消息可以包含多个动作。工具回执返回前不要告诉用户任何事已经完成。',
     '只在关键事实不清时才用 clarify 提问；能查到的不问。',
     '始终使用用户的语言回复。',
+    ...(host.selectedAssetRefs?.length ? ['用户为本条消息选择的任务参考资料（固定版本，只在创建任务时投射）：'+JSON.stringify(host.selectedAssetRefs)] : []),
   ]
   const memory = host.store.memory.list({ limit: 100 }).filter(entry => memoryLive(entry) && memoryAllowed(host, entry, conversationId)).slice(0, 20)
   if (memory.length > 0) {

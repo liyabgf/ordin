@@ -5067,9 +5067,12 @@ WantedBy=default.target
     else if (name === 'settings') show('settings')
     else show('chat')
   }
+  let pendingAssetRef = null
   window.addEventListener('message', event => {
     if (event.origin !== location.origin || ![$('chat-frame').contentWindow, $('workspace-frame').contentWindow, $('assets-frame').contentWindow].includes(event.source)) return
     const data = event.data
+    if (data?.type === 'ordin:chat-ready' && event.source === $('chat-frame').contentWindow && pendingAssetRef) { $('chat-frame').contentWindow.postMessage({type:'ordin:use-asset',assetRef:pendingAssetRef},location.origin);pendingAssetRef=null }
+    if (data?.type === 'ordin:use-asset' && event.source === $('assets-frame').contentWindow && data.assetRef && typeof data.assetRef.id==='string') { const frame=$('chat-frame');pendingAssetRef=data.assetRef;show('chat');if(frame.contentWindow?.ChatAssets){frame.contentWindow.postMessage({type:'ordin:use-asset',assetRef:pendingAssetRef},location.origin);pendingAssetRef=null} }
     if (data?.type === 'ordin:navigate') friendlyNavigate(data.tab, typeof data.ticketId === 'string' ? data.ticketId : '')
     if (data?.type === 'ordin:continue-task' && typeof data.ticketId === 'string') { $('chat-frame').src = '/ordin/chat?task=' + encodeURIComponent(data.ticketId); show('chat') }
   })

@@ -30,6 +30,7 @@ function fixture(search = '?ticket=t-wait') {
     calls.push([url, options]); const path = url.replace('/ordin/api/', '')
     if (path === 'model/config') return response({ configuredKey: false, defaultModel: 'small-model' })
     if (path === 'execution/status') return response({ selected: 'codex', health: null })
+    if (path.startsWith('assets?')) return response({assets:[{id:'ref-one',name:'Dataset',managed:true,status:'active',revision:2,contentHash:'a'.repeat(64)}]});
     if (path.startsWith('tickets?')) { if (deferredList) { const p = deferredList; deferredList = null; return p } return response(listError ? { error: 'list offline' } : { tickets }, !listError) }
     const match = new RegExp('^tickets/([^/]+)(?:/(.*))?$').exec(path); if (!match) throw Error('unexpected route ' + path)
     const [, id, action] = match; const ticket = tickets.find(t => t.id === id)
@@ -50,6 +51,16 @@ const titles = (f: ReturnType<typeof fixture>) => f.nodes.list.children.map(c =>
 const deferred = () => { let resolve!: (v: any) => void; const promise = new Promise<any>(r => { resolve = r }); return { promise, resolve } }
 
 describe('friendly workspace actual JavaScript', () => {
+  it('selects a pinned asset for an open task, preserves retry identity and refuses ended tasks',async()=>{
+    const f=fixture();await f.workspace.init();await f.nodes['asset-search'].onclick();await f.nodes['asset-results'].children[0].onclick();
+    expect(f.nodes['asset-selection'].textContent).toContain('Dataset · v2');f.errorPost(true);await f.nodes['asset-send'].onclick();
+    const first=JSON.parse(f.calls.find(([u])=>u.endsWith('/asset-inputs'))[1].body);
+    expect(first.assetRefs).toEqual([{id:'ref-one',revision:2,contentHash:'a'.repeat(64)}]);
+    expect(f.nodes['asset-selection'].textContent).toContain('Dataset');f.errorPost(false);await f.nodes['asset-send'].onclick();
+    expect(JSON.parse(f.calls.filter(([u])=>u.endsWith('/asset-inputs')).at(-1)[1].body).requestId).toBe(first.requestId);
+    await f.workspace.select('t-done');expect(f.nodes['asset-input-area'].hidden).toBe(true);
+    const n=f.calls.filter(([u])=>u.endsWith('/asset-inputs')).length;await f.nodes['asset-send'].onclick();expect(f.calls.filter(([u])=>u.endsWith('/asset-inputs'))).toHaveLength(n);
+  });
   it('opens UTF-8 deliverables safely inside the panel and closes the preview', async()=>{
     const f=fixture(); await f.workspace.init();
     const link=f.nodes.files.children.at(-1); expect(link.dataset.file).toBe('report.md');

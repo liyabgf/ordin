@@ -20,6 +20,7 @@ import {
 import type { BackendKind, BackendSession, DriverHealth, FeedResult, LaunchSpec, RunningTurn, TurnResult, WorkerDriver, WorkerEvent, WorkerSpec } from '../src/drivers/types.ts'
 import { Effects } from '../src/app/effects.ts'
 import { AssetCatalog } from '../src/app/asset-catalog.ts'
+import { AssetObjects } from '../src/app/asset-objects.ts'
 import { LocalHostSandbox, PrepareFailed, WorkerExecutor, type DeskRelay, type ExecutorHost } from '../src/app/executor.ts'
 import { HealthBoard } from '../src/app/health.ts'
 import { createLogger, type Logger } from '../src/app/logger.ts'
@@ -181,6 +182,15 @@ async function harness(options: HarnessOptions = {}) {
   }
   return { dir, workRoot, store, prompts, health, lifetime, lines, proc, driver, effects, engine, executor, delivery, settle, dueNow, save, rebuildExecutor, settings: () => current }
 }
+
+it('projects managed binary bytes with the actual extension after source task removal',async()=>{
+  const c=await harness(), bytes=Buffer.from([0,255,137,80,78,71]), blob=await new AssetObjects(c.dir).put(bytes), at=now();
+  c.store.assets.save({id:'png-managed',name:'Friendly label',kind:'reference',createdAt:at,updatedAt:at,archived:false,status:'active',ownerProfileId:'default',storageVersion:1,storage:{kind:'managed-object',...blob,mimeType:'image/png'},source:{ticketId:'deleted-source',path:'result.png'},revision:1,contentHash:blob.objectKey} as any);
+  const catalog=new AssetCatalog(c.store,c.dir), ref=catalog.resolveMetadata('png-managed').ref;
+  const id=c.engine.createTicket({title:'binary consumer',text:'read it',assetRefs:[ref]}).ticketId!;await c.settle();
+  const ticket=c.engine.require(id);expect(readFileSync(join(ticket.execution!.directory,'attachments','asset-png-managed-r1.png'))).toEqual(bytes);
+  expect(c.driver.prepared.at(-1)!.prompt).toContain('attachments/asset-png-managed-r1.png');expect(c.driver.launches).toHaveLength(1);
+})
 
 it('F2-E1 two workers receive exact pinned imported bytes, and queued archive/hash changes refuse launch', async () => {
   const c = await harness()
@@ -801,6 +811,62 @@ describe('worker events', () => {
     expect(ticket.assignments.at(-1)!.report!.summary).toContain('before its start was recorded')
     expect(ticket.attention).toBeDefined()
     expect(canRetry(ticket)).toBe(true)
+  })
+})
+
+describe('asset input delivery', () => {
+  async function asset(c: Awaited<ReturnType<typeof harness>>) {
+    const bytes = Buffer.from([0, 255, 137, 80, 78, 71]), blob = await new AssetObjects(c.dir).put(bytes), at = now()
+    c.store.assets.save({ id: 'input-png', name: 'image', kind: 'reference', createdAt: at, updatedAt: at, archived: false, status: 'active', ownerProfileId: 'default', storageVersion: 1, storage: { kind: 'managed-object', ...blob, mimeType: 'image/png' }, source: { ticketId: 'gone', path: 'result.png' }, revision: 1, contentHash: blob.objectKey } as any)
+    const catalog = new AssetCatalog(c.store, c.dir)
+    return { bytes, catalog, ref: catalog.resolveMetadata('input-png').ref }
+  }
+  it('copies exact binary input bytes and feed lists the input-specific path and hash', async () => {
+    const c = await harness(), id = await one(c), a = await asset(c)
+    const input = c.engine.assetNote(id, 'binary', [a.ref], 'inspect').inputs[0]!
+    await c.settle()
+    const path = 'attachments/' + input.id + '-asset-input-png-r1.png'
+    expect(readFileSync(join(c.engine.require(id).execution!.directory, path))).toEqual(a.bytes)
+    expect(c.driver.last().feeds[0]).toContain(path)
+    expect(c.driver.last().feeds[0]).toContain(a.ref.contentHash)
+    expect(c.engine.require(id).inputs[0]!.deliveredAt).toBeDefined()
+  })
+  it('keeps queued refs pending and rematerializes them into the resume prompt', async () => {
+    const c = await harness(), id = await one(c), a = await asset(c)
+    c.driver.last().feedBehavior = () => ({ status: 'queued-for-next-turn', reason: 'later' })
+    const input = c.engine.assetNote(id, 'queued', [a.ref], 'next').inputs[0]!
+    await c.settle()
+    expect(c.engine.require(id).inputs[0]!.deliveredAt).toBeUndefined()
+    c.driver.last().final({ status: 'completed', text: 'first' }); await wait(5)
+    c.rebuildExecutor(); c.dueNow(id, 'input'); await c.settle()
+    expect(c.driver.resumes[0]!.spec.prompt).toContain('attachments/' + input.id + '-asset-input-png-r1.png')
+    expect(c.driver.resumes[0]!.spec.prompt).toContain(a.ref.contentHash)
+    expect(c.engine.require(id).inputs[0]!.deliveredAt).toBeDefined()
+  })
+  it.each(['revoked', 'missing'])('refuses %s asset without feeding', async mode => {
+    const c = await harness(), id = await one(c), a = await asset(c)
+    c.engine.assetNote(id, mode, [a.ref], 'no')
+    if (mode === 'revoked') a.catalog.patch(a.ref.id, { archived: true })
+    else vi.spyOn(AssetCatalog.prototype, 'resolveBytes').mockRejectedValue(new Error('missing object'))
+    await c.settle()
+    expect(c.driver.last().feeds).toEqual([])
+    expect(c.engine.require(id).inputs[0]!.deliveredAt).toBeUndefined()
+    vi.restoreAllMocks()
+  })
+  it.each(['ended', 'swapped'])('does not copy or feed after delayed resolve and %s assignment', async mode => {
+    const c = await harness(), id = await one(c), a = await asset(c)
+    let release!: () => void, reached!: () => void
+    const gate = new Promise<void>(r => { release = r }), entered = new Promise<void>(r => { reached = r })
+    const original = AssetCatalog.prototype.resolveBytes
+    const spy = vi.spyOn(AssetCatalog.prototype, 'resolveBytes').mockImplementation(async function(this: AssetCatalog, ref) { const resolved = await original.call(this, ref); reached(); await gate; return resolved })
+    const input = c.engine.assetNote(id, mode, [a.ref], 'race').inputs[0]!
+    const delivering = c.settle(); await entered
+    if (mode === 'ended') c.engine.stopTicket(id)
+    else { c.save({ paused: true }); c.engine.assignmentInterrupted(id, c.engine.require(id).assignments.at(-1)!.id, 'replace') }
+    release(); await delivering; spy.mockRestore()
+    expect(c.driver.turns[0]!.feeds).toEqual([])
+    expect(existsSync(join(c.engine.require(id).execution!.directory, 'attachments', input.id + '-asset-input-png-r1.png'))).toBe(false)
+    expect(c.engine.require(id).inputs[0]!.deliveredAt).toBeUndefined()
   })
 })
 

@@ -117,7 +117,9 @@ export function ticketView(ticket: Ticket): Record<string, unknown> {
     ...(ticket.acceptance === undefined ? {} : { acceptance: ticket.acceptance }),
     canRetry: canRetry(ticket),
     notes: ticket.notes,
-    inputs: ticket.inputs.map(input => ({ id: input.id, kind: input.kind, at: input.at, deliveredAt: input.deliveredAt, text: input.text })),
+    inputs: ticket.inputs.map(input => ({ id: input.id, kind: input.kind, at: input.at, deliveredAt: input.deliveredAt, text: input.text,
+      ...(input.kind === 'note' && input.assetRefs?.length ? { assetRefs: input.assetRefs, requestId: input.requestId, receipt: input.deliveredAt !== undefined ? 'delivered' : ticket.ended !== undefined ? 'not-delivered' : 'queued' } : {}),
+    })),
   }
 }
 

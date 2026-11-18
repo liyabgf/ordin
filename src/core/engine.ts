@@ -8,7 +8,7 @@
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
 import {
-  validateAssetRefs, validateSkillRefs, type Artifact, type Dependency, type Project, type TicketEvent, type TicketEventType, type Work, type UsageSnapshot, type AttemptUsage,
+  validateAssetRefs, validateSkillRefs, type AssetRef, type Artifact, type Dependency, type Project, type TicketEvent, type TicketEventType, type Work, type UsageSnapshot, type AttemptUsage,
   canRetry, latestAssignment, liveTicket, released, runningAssignment, type Assignment, type Attachment, type Decision,
   type Disposition,
   type Mandate, type ReplyTo, type Report, type SourceKindName, type Thread, type Ticket, type TicketInput, type TicketOutcome, type Trigger,
@@ -795,6 +795,34 @@ export class Engine {
 
   note(ticketId: string, text: string, attachments?: readonly string[]): Ticket {
     return this.addInput(ticketId, { kind: 'note', text, ...(attachments?.length ? { attachments } : {}) })
+  }
+
+  /** Persist an idempotent note with fixed asset versions; catalog authorization belongs to the application. */
+  assetNote(ticketId: string, requestId: string, refs: readonly AssetRef[], text: string): Ticket {
+    return this.tx.atomic(() => {
+      if (typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(requestId)) throw new Error('Invalid asset input requestId')
+      if (!Array.isArray(refs) || refs.length < 1 || refs.length > 16) throw new Error('assetRefs must contain 1 to 16 references')
+      const assetRefs = validateAssetRefs(refs)
+      if (typeof text !== 'string') throw new Error('Invalid asset input text')
+      const ticket = this.require(ticketId)
+      if (ticket.deleted !== undefined) throw new Error('Ticket is deleted')
+      const id = key('input-asset', ticketId, requestId)
+      const existing = ticket.inputs.find(input => input.id === id)
+      if (existing !== undefined) {
+        if (existing.kind !== 'note' || existing.requestId !== requestId || existing.text !== text
+          || JSON.stringify(existing.assetRefs) !== JSON.stringify(assetRefs)) throw new Error('Asset input requestId conflict')
+        return ticket
+      }
+      if (!liveTicket(ticket)) throw new UserError('ticket_ended')
+      if (ticket.recovery !== undefined) throw reconciliationRequired(ticket)
+      const input: TicketInput = { id, kind: 'note', text, at: this.now(), requestId, assetRefs }
+      const next: Ticket = { ...ticket, inputs: [...ticket.inputs, input] }
+      this.repos.tickets.save(next)
+      this.record(ticketId, 'input', { kind: 'person' }, { input: 'note', inputId: id, requestId, assetRefs })
+      const assignment = runningAssignment(next)
+      if (assignment !== undefined) this.tx.afterCommit(() => this.executor.deliver(next, assignment))
+      return next
+    })
   }
 
   /**

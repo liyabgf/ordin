@@ -215,7 +215,7 @@ export class Runtime implements HttpHost {
    * One conversation turn for the panel and the API: the coordinator decides, this method performs.
    * Returns every text the coordinator sent (a reply, a clarifying question, and the final answer).
    */
-  async conversationTurn(conversationId: string, userText: string, model?: string): Promise<{ reply: string; sent: readonly string[]; toolOutcomes: readonly unknown[]; rounds: number }> {
+  async conversationTurn(conversationId: string, userText: string, model?: string, selectedAssetRefs: readonly import('../core/model.ts').AssetRef[] = []): Promise<{ reply: string; sent: readonly string[]; toolOutcomes: readonly unknown[]; rounds: number }> {
     this.conversations.assertWritable(conversationId, true)
     assertDefaultConversation(this.store, conversationId, true)
     const saved = this.settings().deskLlm
@@ -225,8 +225,11 @@ export class Runtime implements HttpHost {
     const cfg = { ...saved, model: model === undefined ? (saved.scenarios.conversation || saved.model) : model.trim() }
     if (!cfg.baseUrl || !cfg.model) throw new Error('模型尚未配置：请在设置里填写服务地址与模型名称')
     const sent: string[] = []
+    const pinnedAssetRefs = selectedAssetRefs.map(ref => this.assets.resolveMetadata(ref).ref)
     const host: CoordinatorHost = {
       skills: () => this.prompts.skills(),
+      assets: this.assets,
+      selectedAssetRefs: pinnedAssetRefs,
       engine: this.engine,
       store: this.store,
       send: async (text: string) => { sent.push(text) },

@@ -29,6 +29,7 @@ import { changesView } from './about.ts'
 import { PROMPT_ROLES, PromptConflict, packageFile } from './prompts.ts'
 import { builtInSkillsView } from './skills.ts'
 import { decisionView, scheduleView, ticketSummary, ticketView } from './views.ts'
+import { addAssetInput } from './asset-inputs.ts'
 import { isTextFile, MAX_FILE_BYTES, resolveInside, resolveRealInside, type FileListing } from './files.ts'
 import type { HealthBoard } from './health.ts'
 import type { Prompts } from './prompts.ts'
@@ -174,7 +175,7 @@ export interface HttpHost {
   testModel?(value: unknown): Promise<{ ok: true; model: string }>
   listModels?(value: unknown): Promise<{ models: string[] }>
   /** One coordinator turn for the panel chat; absent means the API answers 501 rather than pretending. */
-  conversationTurn?(conversationId: string, text: string, model?: string): Promise<{ reply: string; sent: readonly string[]; toolOutcomes: readonly unknown[]; rounds: number }>
+  conversationTurn?(conversationId: string, text: string, model?: string, assetRefs?: readonly {id:string;revision:number;contentHash:string}[]): Promise<{ reply: string; sent: readonly string[]; toolOutcomes: readonly unknown[]; rounds: number }>
   conversationMessages?(conversationId: string, limit?: number): readonly Record<string, unknown>[]
   conversations?: Conversations
   /** 一张 Ticket 的 worker 此刻在做什么。@throws UserError('ticket_missing') */
@@ -613,6 +614,7 @@ function table(host: HttpHost): readonly Route[] {
       host.passes.requestPass()
       return { dropped: request.upstream, waitsFor: host.engine.blockedBy(params.id!) }
     }),
+    route('POST', 'tickets/:id/asset-inputs', async ({params,body}) => {const result=await addAssetInput(host,params.id!,await body());host.passes.requestPass();return result}),
     route('POST', 'tickets/:id/note', async ({ params, body }) => {
       const request = BodySchemas.text.parse(await body())
       const ticket = host.engine.note(params.id!, request.text)
@@ -783,10 +785,13 @@ function table(host: HttpHost): readonly Route[] {
       const text = typeof payload === 'object' && payload !== null ? (payload as Record<string, unknown>).text : undefined
       if (typeof text !== 'string' || text.trim() === '') throw new RouteError(400, 'A non-empty text is required')
       const model = (payload as Record<string, unknown>).model
+      const rawRefs = (payload as Record<string, unknown>).assetRefs
+      if (rawRefs !== undefined && (!Array.isArray(rawRefs) || rawRefs.length > 32 || rawRefs.some(ref => ref === null || typeof ref !== 'object' || Array.isArray(ref) || Object.keys(ref as Record<string,unknown>).some(key => !['id','revision','contentHash'].includes(key)) || typeof (ref as Record<string,unknown>).id !== 'string' || !Number.isSafeInteger((ref as Record<string,unknown>).revision) || Number((ref as Record<string,unknown>).revision) < 1 || typeof (ref as Record<string,unknown>).contentHash !== 'string' || !/^[a-f0-9]{64}$/.test(String((ref as Record<string,unknown>).contentHash))))) throw new RouteError(400, 'assetRefs must contain up to 32 pinned asset references')
+      const assetRefs = (rawRefs ?? []) as {id:string;revision:number;contentHash:string}[]
       if (model !== undefined && (typeof model !== 'string' || model.trim() === '' || model.length > 200)) throw new RouteError(400, 'model must be a non-empty saved model name of at most 200 characters')
       try {
         if (host.conversations !== undefined || host.store !== undefined) (host.conversations ?? new Conversations(host.store)).assertWritable(params.id!, true)
-        return await host.conversationTurn(params.id!, text, model as string | undefined)
+        return await host.conversationTurn(params.id!, text, model as string | undefined, assetRefs)
       } catch (error) {
         if (error instanceof ConversationError) throw error
         throw new RouteError(error instanceof RangeError ? 400 : 503, error instanceof Error ? error.message : String(error))

@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { Engine, Memory, parseSettings, settingsPolicy, type Delivery, type Executor, type Report, type Ticket } from '../src/core/index.ts'
 import { Store } from '../src/app/store.ts'
+import { AssetCatalog } from '../src/app/asset-catalog.ts'
+import { AssetObjects } from '../src/app/asset-objects.ts'
 import { Conversations } from '../src/app/conversations.ts'
 import { COORDINATOR_TOOLS, executeCoordinatorTool, runCoordinatorTurn, type CoordinatorHost } from '../src/app/coordinator.ts'
 import type { DeskMessage } from '../src/app/desk-history.ts'
@@ -70,6 +72,16 @@ describe('coordinator tool schemas', () => {
 })
 
 describe('coordinator tools', () => {
+  it('uses operator selected managed revisions when the model omits references and refuses revoked bytes', async()=>{
+    const c=harness(), dir=tempDir('coord-managed-'), blob=await new AssetObjects(dir).put(Buffer.from([0,255,1])), at=new Date().toISOString();
+    const asset={id:'operator-selected',ownerProfileId:'default',storageVersion:1,storage:{kind:'managed-object',...blob},contentHash:blob.objectKey,revision:1,status:'active',name:'input.bin',source:{ticketId:'source-removed',path:'input.bin'},kind:'reference',createdAt:at,updatedAt:at,archived:false};
+    c.store.assets.save(asset as any); Object.assign(c.host,{assets:new AssetCatalog(c.store,dir),selectedAssetRefs:[{id:asset.id,revision:1,contentHash:blob.objectKey}]});
+    const created=await tool('create_task',{title:'Use selected data',text:'work'},c);
+    expect(created.ok).toBe(true);expect(c.engine.require(String(created.data?.ticketId)).assetRefs).toEqual(c.host.selectedAssetRefs);
+    c.store.assets.save({...asset,archived:true} as any);
+    const count=c.store.tickets.list().length;
+    expect((await tool('create_task',{title:'revoked',text:'work'},c)).ok).toBe(false);expect(c.store.tickets.list()).toHaveLength(count);
+  })
   it('F3-D2 exposes durable usage and keeps missing costs unknown', async () => {
     const context = harness()
     const created = await tool('create_task', { title: 'usage', text: 'work' }, context)
