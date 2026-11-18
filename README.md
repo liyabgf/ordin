@@ -1,88 +1,96 @@
 # Ordin
 
-你自己的任务调度中台：你在聊天里说一句话，Ordin 决定派给谁干（DSH / Codex / Claude Code 等执行单元），
-盯着干完，把结果送回你说话的地方。
+中文 | [English](README.en.md)
 
-> 当前状态：**独立宿主与三后端驱动已实现并通过离线一体化验收；真实后端因凭据未通过 P0，还不能宣称可生产执行。**
-> 现役系统仍是 [Ordin](https://github.com/liyabgf/dsh-Ordin)（DSH 插件）。本仓库是它的独立化后续工程。
+Ordin 是一个本地任务协调器。你可以先在对话里讨论想法，再明确交办需要执行的工作。Ordin 会记录对话与任务，并在任务工作台汇总进度、报告、待你处理的事项和交付物。
 
-## 先读哪份
+> **开发预览。** 面板、设置和任务记录可以独立运行。执行任务需要配置 DSH、Codex 或 Claude Code。离线测试和受控浏览器验收不等于所有供应商、聊天渠道及长时间运行都已完成生产验收。
+>
+> Ordin 是独立运行的本地任务协调器，源自早期的 DSH 插件 myagent。聊天桥代码从旧项目迁入，在 Ordin 中继续维护。[旧插件仓库 dsh-myagent](https://github.com/liyabgf/dsh-myagent)
 
-| 文档 | 内容 |
-| --- | --- |
-| [docs/33-functional-execution-plan.md](docs/33-functional-execution-plan.md) | **当前执行目标：功能优先，逐步完成真实任务闭环与交付验收。** |
-| [docs/01-current-goal.md](docs/01-current-goal.md) | 独立宿主阶段的目标与完成定义；作为当前产品工程的基础阶段验收 |
-| [AGENTS.md](AGENTS.md) | **执行纪律正典：约束干活的 agent。** 动手前必读；开工先登记 docs/ledger.md |
-| [docs/02-execution-discipline.md](docs/02-execution-discipline.md) | 纪律索引（正典在 AGENTS.md；事故登记 docs/incidents.md） |
-| [docs/03-architecture.md](docs/03-architecture.md) | 目标架构：WorkerDriver 抽象 + 三个执行后端 |
-| [docs/10-migration-plan.md](docs/10-migration-plan.md) | 迁移策略：为什么分这几批 |
-| [docs/20-execution-engineering.md](docs/20-execution-engineering.md) | **执行工程方案：任务卡级分解，派单按这里**（含验收命令与证据目录） |
-| [docs/00-vision.md](docs/00-vision.md) | 长期方向（个人数字人格 / 手机操作端）。**参考，不是当下目标** |
+## 可以做什么
 
-背景与迁移说明见：[工程规划](docs/33-functional-execution-plan.md)、[迁移计划](docs/10-migration-plan.md)。
+- **先讨论，再交办：** 普通聊天不会创建任务。明确交办且创建成功后，对话中会出现任务卡。发送结果不确定时，先读取对话历史和任务记录，再决定是否重试。
+- **跟进任务：** 查看任务状态、执行端、最近一条有记录的进度、最近成功刷新时间、报告和交付物。等待执行端、等待你补充、需要人工核对的恢复状态，以及暂时无法读取的进度会分别显示。
+- **配置连接：** Ordin 对话模型与执行端分别配置。连接版本标识可帮助你对照当前设置和任务记录。保存新连接不会迁移正在运行的回合；后续启动或续接按当时的配置准备。
+- **管理复用资产：** 导入和浏览文档、数据集、报告、代码与参考资料。资产会标记为可用、待确认或已归档；任务可固定引用某个版本。送达执行端不代表执行端已读取或使用。
+- **查看投递状态：** 草稿已选、已保存待投递、已送达、任务结束前未送达是不同状态。资产可用状态和任务验收状态也分别记录。
+- **整理工作与接入来源。** 除任务工作台外，还可直接创建任务、设置定时任务、查看工作、项目和记录。系统也支持收件目录、API、规则和单独配置的聊天桥。[聊天桥配置](bridges/README.md)
+- **管理记忆与技能。** 候选记忆须经用户确认。支持为任务选择启用的技能及固定版本。
+- **本机运行：** 未配置执行端时仍可启动面板。受保护的离线命令可备份和恢复 SQLite 数据库。
 
-## 独立启动
+## 启动
 
-只需 Node ≥24.9 和项目依赖。无需先安装或启动 DSH、Codex、Claude Code，也无需先设置 API key。
+需要 Node.js 24.9 或更高版本及项目依赖。启动 Ordin 前不需要先启动执行端。
+
+### 使用 npm
 
 ```bash
+git clone https://github.com/liyabgf/ordin.git
 cd ordin
-
-# 任选 npm 或 pnpm 安装依赖
-npm install
-# pnpm install
-
+npm ci
 npm start
-# pnpm start
 ```
 
-pnpm 路径已用 11.28.5 验证；`pnpm-workspace.yaml` 的 `allowBuilds` 只批准 `esbuild` 安装脚本，保留其余依赖脚本的默认限制。CI 可用 `pnpm install --frozen-lockfile`。
-
-打开 http://127.0.0.1:7471/ordin/（以终端打印地址为准）。Ctrl-C 停止。
-面板、设置和任务账本独立运行；执行工具未配置时健康状态会提示原因，调用任务执行时会明确拒绝，不会伪装完成。配置好工具后重试任务会重新检查可用性。
-
-## 第三方模型设置
-
-在「设置 → Ordin 模型」选择 OpenAI、DeepSeek 或自定义 OpenAI 兼容接口，填写服务地址、模型和 API key。密钥保存到独立凭据文件（0600），界面不回显。支持测试连接和获取模型列表。也可使用环境变量认证，在启动前导出：
+### 使用 pnpm
 
 ```bash
-export OPENAI_API_KEY="your-key"
-npm start
-# 或：pnpm start
+pnpm install --frozen-lockfile
+pnpm start
 ```
 
-本地保存的密钥优先，清除后恢复环境变量认证。密钥不进入设置 JSON、数据库或日志。当前支持 OpenAI Chat Completions 兼容协议，尚未支持 Anthropic 原生协议。
+打开终端打印的地址。默认地址为 `http://127.0.0.1:7471/ordin/`。按 Ctrl-C 停止服务。面板仅供可信的本机使用。
 
-## 离线数据库备份与恢复
+## 第一次交办任务
 
-在需要切版本或迁移前，先停止 Ordin，然后显式指定 state 目录与备份文件：
+1. 在设置中配置并测试对话模型，再检查准备使用的执行端。
+2. 默认受理模式为 `observe`（只记录）。要允许通过门禁的任务执行，请切换为 `auto`。
+3. 从首页进入「开始」，描述希望执行的工作和交付物。创建成功后，从任务卡打开工作台查看进度。
+
+## 对话模型
+
+在“设置 → Ordin 模型”选择 OpenAI、DeepSeek 或其他兼容 OpenAI Chat Completions 协议的服务，填写服务地址、模型和 API key 并测试连接。密钥保存在独立本机凭据文件（0600）中，面板不回显。也可使用系统支持的环境变量；本地保存的密钥优先。当前不支持 Anthropic 原生 API。
+
+Ordin 对话模型与 DSH 自己的模型凭据相互独立。不要将 API key 或服务令牌写进任务内容、代码仓库或 shell 历史。
+
+## 执行端
+
+在“设置 → 执行工具连接”检查或连接本机执行端。执行端需要已安装并登录，或其服务正在运行。DSH 服务模式使用 DSH 自身的权限配置；Codex 和 Claude Code 使用各自的本机安装与登录状态。
+
+Ordin 会分别报告执行回执和任务验收状态。“已接收”“已启动”或“已送达”都不等于“已完成”。连接 ID 标识本机连接配置版本，不含凭据。缺少历史 ID 的旧任务显示为未知。
+
+## 资产与交付物
+
+资产引用固定版本和内容哈希，以便之后确认任务引用了哪份资料。“已送达”表示 Ordin 收到了执行端投递回执，不代表执行端已读取、理解或成功使用。任务结束时仍未送达的输入会明确标记。
+
+写入过程中发生网络错误时，服务端可能已经完成操作。面板会保留输入，标记结果尚未确认，并要求刷新核对当前状态后再决定下一步；不会自动重复写入。
+
+## 数据与备份
+
+默认状态、工作和收件目录位于 `~/.ordin`。可通过 `ORDIN_STATE_DIR`、`ORDIN_WORK_ROOT` 和 `ORDIN_INBOX_DIR` 覆盖。不要公开这些目录中的数据库、任务内容、工作文件或凭据。
+
+离线备份或恢复前先停止 Ordin，并指定绝对路径：
 
 ```bash
 node --experimental-transform-types src/index.ts storage backup --state-dir /absolute/path/to/state --output /absolute/path/to/ordin.sqlite3
 node --experimental-transform-types src/index.ts storage restore --state-dir /absolute/path/to/state --input /absolute/path/to/ordin.sqlite3
 ```
 
-恢复会保留当前数据库 rollback 文件；若该目录仍被服务锁定、输入不完整或 SQLite sidecar 状态无法安全整理，命令会拒绝。维护命令只处理 SQLite 主库，不包含模型 API key、工作目录、上传文件或渠道凭据。密钥必须按独立凭据策略另行保存。不要手改 schema version 来回滚。
+维护命令只处理 SQLite 数据库；工作文件和凭据需分别备份。若服务仍持有状态锁、输入不完整或 sidecar 不安全，恢复会拒绝执行。不要手动修改 schema version 来回滚。
 
-## 工程基线
+## 当前限制
 
-- Node ≥ 24.9（与 DSH 一致；直接用 Node 跑 .ts，无构建步骤也能启动）
-- `npm run check`：typecheck + 测试。**绿灯的定义是退出码**（见纪律 0.1）
-- `npm start`：启动 Ordin 自己的面板与任务管理；执行工具检查在后台进行，不阻塞启动。
-- `scripts/gate.sh`：最小闸门，落盘日志后报告退出码
+- 离线测试和隔离 Chrome 检查验证的是受控产品路径；不能证明你的凭据和网络下真实供应商调用一定成功。
+- 最新面板验收覆盖桌面、390px 布局、键盘焦点、可访问性树、CSS 放大和窄屏重排。原生浏览器缩放、人工读屏、所有供应商和聊天渠道仍需单独验证。
+- 进度基于已记录事件，并受历史窗口限制。历史不完整时会明确标成不完整或未知；不保证所有执行端都提供实时 token 流。
+- 文本预览受后端读取限制。其他格式走支持的下载或预览路径，不保证所有格式都能内嵌显示。
+- 受控模型和执行端夹具验证应用链路，不代表模型产出质量或每种自动验收决定都正确。
 
-## 目录
+## 开发检查
 
+```bash
+npm run typecheck
+npx vitest run --maxWorkers=1 --no-file-parallelism
 ```
-src/core/     领域模型与引擎：Trigger → Gate → Mandate → Ticket → Assignment（无外部依赖）
-src/sources/  五个来路：cron / inbox / chat / rule / api
-src/drivers/  执行单元适配：dsh / codex / claude（各自 pin 版本 + 契约测试）
-src/desk/     总管分诊（自带 LLM client，不再借宿主的）
-src/app/      store / effects / delivery / 自带 HTTP server 与面板
-src/index.ts  独立进程入口
-prompts/      worker / orchestrator / triage 提示词
-bridges/      聊天桥（独立进程，从 Ordin 原样迁入）
-panel/        面板静态资源
-tests/        行为测试 + 各后端契约测试
-scripts/      闸门与工具
-```
+
+更多信息见[架构](docs/03-architecture.md)、[功能执行计划](docs/33-functional-execution-plan.md)、[迁移计划](docs/10-migration-plan.md)和[安全边界](SECURITY.md)。英文版见[README.en.md](README.en.md)。
