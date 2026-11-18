@@ -486,13 +486,14 @@ export class Runtime implements HttpHost {
       emit: (event: DomainEvent): void => this.onEvent(event),
     })
     this.effects.handle('trigger', payload => { this.engine.receive(payload as Trigger) })
-    const assets = new AssetRegistration({ assets: this.store.assets, workRoot: this.machine.workRoot })
+    const assets = new AssetRegistration({ assets: this.store.assets, workRoot: this.machine.workRoot, stateDir: this.machine.stateDir })
     this.effects.handle('asset-registration', async payload => {
       const { ticketId, resultKey } = payload as AssetRegistrationPayload
       const ticket = this.store.tickets.get(ticketId)
       try {
         if (ticket === undefined || ticket.deleted !== undefined) throw new Error('Asset registration Ticket is missing or deleted')
         if (ticket.ended?.outcome !== 'done' || assetResultKey(ticket) !== resultKey) throw new Error('Asset registration result no longer matches persisted Ticket')
+        if (ticket.conversationId !== undefined && this.store.conversations.get(ticket.conversationId)?.profileId !== 'default') throw new Error('Asset registration profile is not authorized')
         await assets.registerTicket(ticket)
         this.health.entry('assets').record('Asset registration completed for Ticket ' + ticketId)
       } catch (error) {

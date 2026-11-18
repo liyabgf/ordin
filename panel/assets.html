@@ -1,0 +1,718 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>资产 · Ordin</title>
+    <style>
+:root {
+  font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;
+  color:#263733;
+  background:#f7f8f6;
+  --line:#dce3df;
+  --muted:#697871;
+  --teal:#176b59
+}
+* {
+  box-sizing:border-box
+}
+[hidden] {
+  display:none!important
+}
+body {
+  margin:0
+}
+button,input,textarea,select {
+  font:inherit;
+  color:inherit
+}
+button {
+  cursor:pointer
+}
+button:disabled {
+  opacity:.5;
+  cursor:default
+}
+button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible {
+  outline:3px solid #238b75;
+  outline-offset:2px
+}
+header {
+  max-width:1240px;
+  margin:auto;
+  padding:28px 28px 18px
+}
+h1 {
+  font-size:26px;
+  margin:5px 0 6px
+}
+.eyebrow {
+  color:var(--teal);
+  font-size:11px;
+  letter-spacing:.1em;
+  font-weight:700
+}
+.muted {
+  color:var(--muted);
+  font-size:13px
+}
+.toolbar {
+  max-width:1240px;
+  margin:auto;
+  padding:8px 28px 18px;
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap
+}
+.toolbar input {
+  flex:1;
+  min-width:180px
+}
+.toolbar select,.toolbar input,.btn {
+  border:1px solid var(--line);
+  border-radius:7px;
+  background:#fff;
+  padding:9px 12px;
+  min-height:42px
+}
+.btn.primary {
+  background:var(--teal);
+  border-color:var(--teal);
+  color:#fff
+}
+.error {
+  max-width:1240px;
+  margin:0 auto 14px;
+  padding:12px;
+  background:#fcf0ed;
+  color:#8c3d35;
+  border-left:3px solid #b05045
+}
+.layout {
+  max-width:1240px;
+  margin:auto;
+  padding:8px 28px 36px;
+  display:grid;
+  grid-template-columns:minmax(260px,.85fr) minmax(0,1.5fr);
+  gap:20px;
+  align-items:start
+}
+.panel {
+  min-width:0;
+  overflow:hidden;
+  border:1px solid var(--line);
+  border-radius:10px;
+  background:#fff;
+  padding:20px
+}
+.asset {
+  width:100%;
+  text-align:left;
+  border:1px solid var(--line);
+  border-radius:8px;
+  padding:13px;
+  margin:0 0 9px;
+  background:#fff
+}
+.asset[aria-current=true] {
+  border-color:#4b9b84;
+  background:#f0f7f3
+}
+.asset-title {
+  display:block;
+  font-weight:650;
+  overflow-wrap:anywhere
+}
+.asset-meta {
+  display:block;
+  margin-top:5px;
+  color:var(--muted);
+  font-size:12px
+}
+.badge {
+  display:inline-block;
+  padding:2px 7px;
+  border-radius:5px;
+  background:#edf3ef;
+  color:#47665b;
+  font-size:12px;
+  margin:5px 5px 0 0
+}
+.badge.warn {
+  background:#fbf0d8;
+  color:#8b601f
+}
+.badge.bad {
+  background:#faecea;
+  color:#9b443b
+}
+.empty {
+  padding:24px 8px;
+  color:va... (line truncated to 2000 chars)
+      input,textarea,select{max-width:100%;min-width:0}.field input,.field textarea,.field select{display:block;width:100%;max-width:100%;min-width:0}.actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn{max-width:100%;white-space:normal;overflow-wrap:anywhere}.preview img{max-width:100%;height:auto}.description{overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere}
+      #detail input,#detail textarea,#detail select{display:block;width:100%;max-width:100%;box-sizing:border-box}#detail .actions{display:flex;flex-wrap:wrap;max-width:100%;gap:6px}#detail .actions .btn{min-width:0;max-width:100%;box-sizing:border-box}
+      @media(max-width:760px){header{padding:18px 14px 10px}.toolbar{padding:8px 14px 12px}.toolbar input{min-width:120px}.layout{padding:8px 14px 24px;grid-template-columns:minmax(0,1fr);gap:12px}.panel{padding:14px}.actions{flex-wrap:wrap}.detail-head{flex-wrap:wrap}.preview-head{flex-wrap:wrap}.btn{min-height:44px}}
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="eyebrow">ORDIN / LIBRARY</div>
+      <h1>资产</h1>
+      <div class="muted">集中查看可复用的文档、数据和代码。</div>
+    </header>
+    <div id="error" class="error" role="alert" hidden></div>
+    <div class="toolbar">
+      <input
+        id="query"
+        type="search"
+        placeholder="搜索资产名称或说明"
+        aria-label="搜索资产"
+      /><select id="kind" aria-label="资产类型">
+        <option value="">全部类型</option>
+        <option value="document">文档</option>
+        <option value="dataset">数据集</option>
+        <option value="report">报告</option>
+        <option value="code">代码</option>
+        <option value="reference">参考资料</option></select
+      ><select id="status" aria-label="资产状态">
+        <option value="">全部状态</option>
+        <option value="active">正式</option>
+        <option value="candidate">候选</option></select
+      ><button id="refresh" class="btn">刷新</button
+      ><button id="import-open" class="btn primary">导入文本</button>
+    </div>
+    <main class="layout">
+      <section class="panel" aria-label="资产列表">
+        <div><b>资产列表</b> <span id="count" class="muted"></span></div>
+        <p id="list-loading" class="muted" role="status" hidden></p>
+        <div id="list" aria-live="polite" class="empty">正在读取资产…</div>
+      </section>
+      <section class="panel" aria-label="资产详情">
+        <div id="detail">
+          <h2>选择一项资产</h2>
+          <p class="muted">从左侧列表查看详情和预览。</p>
+        </div>
+        <div id="import-panel" class="section" hidden>
+          <h3>导入文本</h3>
+          <div class="field">
+            <label for="import-name">名称</label><input id="import-name" />
+          </div>
+          <div class="field">
+            <label for="import-kind">类型</label
+            ><select id="import-kind">
+              <option value="document">文档</option>
+              <option value="dataset">数据集</option>
+              <option value="report">报告</option>
+              <option value="code">代码</option>
+              <option value="reference">参考资料</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="import-description">说明</label
+            ><textarea id="import-description"></textarea>
+          </div>
+          <div class="field">
+            <label for="import-text">正文</label
+            ><textarea id="import-text"></textarea>
+          </div>
+          <div class="actions">
+            <button id="import-submit" class="btn primary">导入</button
+            ><button id="import-cancel" class="btn">取消</button>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script>
+      (function () {
+        "use strict";
+        const $ = (id) => document.getElementById(id);
+        const state = {
+          assets: [],
+          selected: null,
+          detail: null,
+          filters: { query: "", kind: "", status: "" },
+          listGeneration: 0,
+          detailGeneration: 0,
+          contentGeneration: 0,
+          pending: false,
+          objectUrl: null,
+          drafts: {},
+          initialized: false,
+        };
+        const labels = {
+          document: "文档",
+          dataset: "数据集",
+          report: "报告",
+          code: "代码",
+          reference: "参考资料",
+        };
+        const statusLabels = { active: "正式", candidate: "候选" };
+        function esc(v) {
+          return String(v ?? "").replace(
+            /[&<>"']/g,
+            (c) =>
+              ({
+                "&": "&amp;",
+                "<": "&lt;",
+                ">": "&gt;",
+                '"': "&quot;",
+                "'": "&#39;",
+              })[c],
+          );
+        }
+        function showError(e) {
+          $("error").textContent = e?.message || String(e);
+          $("error").hidden = false;
+        }
+        function clearError() {
+          $("error").hidden = true;
+          $("error").textContent = "";
+        }
+        async function api(path, options) {
+          const r = await fetch("/ordin/api/" + path, { ...options, headers: { "x-ordin-request": "1", ...(options?.headers || {}) } });
+          let d;
+          try {
+            d = await r.json();
+          } catch {
+            throw Error("响应格式不正确");
+          }
+          if (!r.ok)
+            throw Error(
+              d?.error?.message ||
+                d?.error ||
+                d?.message ||
+                "请求失败（HTTP " + r.status + "）",
+            );
+          return d;
+        }
+        function query() {
+          const p = new URLSearchParams();
+          if (state.filters.query) p.set("query", state.filters.query);
+          if (state.filters.kind) p.set("kind", state.filters.kind);
+          p.set("includeArchived", "true");
+          p.set("limit", "200");
+          return p.toString();
+        }
+        function visible() {
+          return state.assets.filter(
+            (a) =>
+              (!state.filters.status || a.status === state.filters.status) &&
+              (!state.filters.kind || a.kind === state.filters.kind) &&
+              (!state.filters.query ||
+                [a.name, a.description, ...(a.tags || [])]
+                  .join(" ")
+                  .toLowerCase()
+                  .includes(state.filters.query.toLowerCase())),
+          );
+        }
+        function renderList() {
+          const items = visible();
+          $("count").textContent = items.length + " 项";
+          const list = $("list");
+          if (!items.length) {
+            list.className = "empty";
+            list.textContent = "没有符合条件的资产。";
+            return;
+          }
+          list.className = "";
+          list.replaceChildren(
+            ...items.map((a) => {
+              const b = document.createElement("button");
+              b.className = "asset";
+              b.type = "button";
+              b.dataset.id = a.id;
+              b.setAttribute("aria-current", String(a.id === state.selected));
+              const source =
+                a.source?.availability === "available"
+                  ? a.source.ticketTitle || a.source.ticketId || "来源任务"
+                  : a.source?.availability === "deleted"
+                    ? "来源任务已删除"
+                    : "来源缺失";
+              b.innerHTML =
+                '<span class="asset-title">' +
+                esc(a.name) +
+                '</span><span class="asset-meta">' +
+                esc((a.description || "暂无说明").slice(0, 160)) +
+                '</span><span class="badge">' +
+                esc(labels[a.kind] || a.kind) +
+                '</span><span class="badge ' +
+                (a.status === "candidate" ? "warn" : "") +
+                '">' +
+                esc(statusLabels[a.status] || a.status) +
+                (a.archived ? " · 已归档" : "") +
+                '</span><span class="asset-meta">v' +
+                esc(a.revision) +
+                " · " +
+                esc(source) +
+                "</span>";
+              b.onclick = async () => {
+                await select(a.id);
+                if (state.detail?.id === a.id) await loadContent(a.id);
+              };
+              return b;
+            }),
+          );
+        }
+        function sourceButton(source) {
+          if (!source?.ticketId || source.availability !== "available")
+            return esc(
+              source?.availability === "deleted"
+                ? "来源任务已删除"
+                : "暂无可用来源",
+            );
+          const b = document.createElement("button");
+          b.className = "source-link";
+          b.type = "button";
+          b.textContent = source.ticketTitle || source.ticketId;
+          b.onclick = () =>
+            window.parent?.postMessage(
+              {
+                type: "ordin:navigate",
+                tab: "workspace",
+                ticketId: source.ticketId,
+              },
+              location.origin,
+            );
+          return b;
+        }
+        function renderDetail() {
+          const a = state.detail;
+          if (!a) {
+            $("detail").innerHTML =
+              '<h2>选择一项资产</h2><p class="muted">从左侧列表查看详情和预览。</p>';
+            return;
+          }
+          const source = sourceButton(a.source);
+          const draft = state.drafts[a.id] || a;
+          $("detail").innerHTML =
+            '<div class="detail-head"><div><h2>' +
+            esc(a.name) +
+            '</h2><p class="description">' +
+            esc(a.description || "暂无说明") +
+            '</p></div><span class="badge ' +
+            (a.status === "candidate" ? "warn" : "") +
+            '">' +
+            esc(statusLabels[a.status] || a.status) +
+            '</span></div>' +
+            (a.status === "candidate" ? '<p class="muted">候选资产可浏览，尚未表示验收通过。</p>' : "") +
+            (!a.managed ? '<p class="muted">旧资产尚未独立保存；预览可能不可用。</p>' : "") +
+            '<p class="muted">' +
+            esc(labels[a.kind] || a.kind) +
+            " · v" +
+            esc(a.revision) +
+            " · " +
+            esc(a.updatedAt || "更新时间未知") +
+            '</p><div class="section"><b>来源</b><p id="asset-source"></p></div><div class="section"><b>元数据</b><div class="field"><label for="edit-name">名称</label><input style="width:100%;max-width:100%;box-sizing:border-box" id="edit-name" value="' +
+            esc(draft.name) +
+            '"></div><div class="field"><label for="edit-description">说明</label><textarea style="width:100%;max-width:100%;box-sizing:border-box" id="edit-description">' +
+            esc(draft.description || "") +
+            '</textarea></div><div class="field"><label for="edit-tags">标签（逗号分隔）</label><input style="width:100%;max-width:100%;box-sizing:border-box" id="edit-tags" value="' +
+            esc(
+              Array.isArray(draft.tags) ? draft.tags.join(", ") : draft.tags,
+            ) +
+            '"></div><div class="actions"><button id="save-meta" class="btn primary">保存</button><button id="archive-asset" class="btn">' +
+            (a.archived ? "恢复" : "归档") +
+            '</button><button id="load-content" class="btn">打开预览</button></div></div><div id="preview" class="preview section" hidden><div class="preview-head"><b id="preview-title"></b><button id="preview-close" class="btn" type="button">关闭预览</button></div><div id="preview-body"></div></div>';
+          $("asset-source").replaceChildren(source);
+          ["edit-name", "edit-description", "edit-tags"].forEach((id) => {
+            $(id).oninput = rememberDraft;
+          });
+          $("save-meta").onclick = saveMeta;
+          $("archive-asset").onclick = toggleArchive;
+          $("load-content").onclick = () => loadContent(a.id);
+          $("preview-close").onclick = closePreview;
+        }
+        async function refresh() {
+          const generation = ++state.listGeneration;
+          $("list-loading").hidden = false;
+          $("list-loading").textContent = "正在读取资产…";
+          const previous = state.assets.slice();
+          try {
+            const d = await api("assets?" + query());
+            if (generation !== state.listGeneration) return;
+            if (!Array.isArray(d.assets)) throw Error("响应格式不正确");
+            state.assets = d.assets;
+            renderList();
+            clearError();
+            if (
+              state.selected &&
+              !state.assets.some((a) => a.id === state.selected)
+            ) {
+              rememberDraft();
+              closePreview();
+              ++state.detailGeneration;
+              state.selected = null;
+              state.detail = null;
+              renderDetail();
+            }
+          } catch (e) {
+            if (generation !== state.listGeneration) return;
+            state.assets = previous;
+            renderList();
+            showError((e?.message || String(e)) + "（已保留上次内容）");
+          } finally {
+            if (generation === state.listGeneration)
+              $("list-loading").hidden = true;
+          }
+        }
+        async function select(id) {
+          rememberDraft();
+          closePreview();
+          const generation = ++state.detailGeneration;
+          state.selected = id;
+          renderList();
+          state.detail = null;
+          $("detail").textContent = "正在读取资产详情…";
+          try {
+            const d = await api("assets/" + encodeURIComponent(id));
+            if (generation !== state.detailGeneration) return;
+            state.detail = d;
+            renderDetail();
+            clearError();
+          } catch (e) {
+            if (generation !== state.detailGeneration) return;
+            state.detail = null;
+            $("detail").textContent = "无法读取资产详情，请重试。";
+            showError(e);
+          }
+        }
+        function rememberDraft() {
+          if (state.detail)
+            state.drafts[state.detail.id] = {
+              name: $("edit-name").value,
+              description: $("edit-description").value,
+              tags: $("edit-tags").value,
+            };
+        }
+        function closePreview() {
+          ++state.contentGeneration;
+          if (state.objectUrl) {
+            URL.revokeObjectURL(state.objectUrl);
+            state.objectUrl = null;
+          }
+          const p = $("preview");
+          if (p) {
+            p.hidden = true;
+            $("preview-body").replaceChildren();
+            $("preview-title").textContent = "";
+          }
+        }
+        async function loadContent(id) {
+          closePreview();
+          const generation = ++state.contentGeneration;
+          const p = $("preview");
+          p.hidden = false;
+          $("preview-title").textContent = "正在读取…";
+          $("preview-body").textContent = "正在读取内容…";
+          try {
+            const d = await api(
+              "assets/" + encodeURIComponent(id) + "/content",
+            );
+            if (generation !== state.contentGeneration || state.selected !== id)
+              return;
+            const body = $("preview-body");
+            body.replaceChildren();
+            $("preview-title").textContent = d.mimeType || "内容";
+            if (d.text) {
+              const pre = document.createElement("pre");
+              pre.textContent = decodeBase64(d.base64);
+              body.appendChild(pre);
+            } else {
+              const bytes = decodeBytes(d.base64);
+              if (/^image\/(png|jpeg|gif|webp)$/i.test(d.mimeType || "")) {
+                const img = document.createElement("img");
+                const blob = new Blob([bytes], { type: d.mimeType });
+                const url = URL.createObjectURL(blob);
+                state.objectUrl = url;
+                img.src = url;
+                img.alt = "资产图片预览";
+                body.appendChild(img);
+              } else {
+                const a = document.createElement("a");
+                const blob = new Blob([bytes], {
+                  type: d.mimeType || "application/octet-stream",
+                });
+                const url = URL.createObjectURL(blob);
+                state.objectUrl = url;
+                a.href = url;
+                a.download = a.textContent = "下载文件";
+                body.appendChild(a);
+              }
+            }
+          } catch (e) {
+            if (generation !== state.contentGeneration) return;
+            $("preview-title").textContent = "读取失败";
+            $("preview-body").textContent = e?.message || String(e);
+          }
+        }
+        function decodeBytes(b64) {
+          const raw = atob(b64);
+          const out = new Uint8Array(raw.length);
+          for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+          return out;
+        }
+        function decodeBase64(b64) {
+          return new TextDecoder().decode(decodeBytes(b64));
+        }
+        async function saveMeta() {
+          if (!state.detail || state.pending) return;
+          const a = state.detail;
+          const generation = state.detailGeneration;
+          rememberDraft();
+          const name = $("edit-name").value.trim();
+          if (!name) {
+            showError("名称不能为空");
+            return;
+          }
+          state.pending = true;
+          try {
+            const d = await api("assets/" + encodeURIComponent(a.id), {
+              method: "PATCH",
+              headers: {
+                "content-type": "application/json",
+                "x-ordin-request": "1",
+              },
+              body: JSON.stringify({
+                expectedRevision: a.revision,
+                name,
+                description: $("edit-description").value,
+                tags: $("edit-tags")
+                  .value.split(",")
+                  .map((x) => x.trim())
+                  .filter(Boolean),
+              }),
+            });
+            delete state.drafts[a.id];
+            state.assets = state.assets.map((x) => (x.id === d.id ? d : x));
+            renderList();
+            if (
+              state.selected === a.id &&
+              generation === state.detailGeneration
+            ) {
+              closePreview();
+              state.detail = d;
+              renderDetail();
+              clearError();
+            }
+          } catch (e) {
+            if (
+              state.selected === a.id &&
+              generation === state.detailGeneration
+            )
+              showError(e);
+          } finally {
+            state.pending = false;
+          }
+        }
+        async function toggleArchive() {
+          if (!state.detail || state.pending) return;
+          const a = state.detail;
+          const generation = state.detailGeneration;
+          rememberDraft();
+          state.pending = true;
+          try {
+            const d = await api("assets/" + encodeURIComponent(a.id), {
+              method: "PATCH",
+              headers: {
+                "content-type": "application/json",
+                "x-ordin-request": "1",
+              },
+              body: JSON.stringify({
+                expectedRevision: a.revision,
+                archived: !a.archived,
+              }),
+            });
+            state.assets = state.assets.map((x) => (x.id === d.id ? d : x));
+            renderList();
+            if (
+              state.selected === a.id &&
+              generation === state.detailGeneration
+            ) {
+              closePreview();
+              state.detail = d;
+              renderDetail();
+              clearError();
+            }
+          } catch (e) {
+            if (
+              state.selected === a.id &&
+              generation === state.detailGeneration
+            )
+              showError(e);
+          } finally {
+            state.pending = false;
+          }
+        }
+        async function importText() {
+          if (state.pending) return;
+          const name = $("import-name").value.trim(),
+            text = $("import-text").value;
+          if (!name || !text) {
+            showError("名称和正文不能为空");
+            return;
+          }
+          state.pending = true;
+          try {
+            await api("assets/import", {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                "x-ordin-request": "1",
+              },
+              body: JSON.stringify({
+                text,
+                name,
+                kind: $("import-kind").value,
+                description: $("import-description").value,
+                tags: [],
+              }),
+            });
+            $("import-panel").hidden = true;
+            ["import-name", "import-text", "import-description"].forEach(
+              (id) => {
+                $(id).value = "";
+              },
+            );
+            await refresh();
+          } catch (e) {
+            showError(e);
+          } finally {
+            state.pending = false;
+          }
+        }
+        $("query").oninput = () => {
+          state.filters.query = $("query").value;
+          refresh();
+        };
+        $("kind").onchange = () => {
+          state.filters.kind = $("kind").value;
+          refresh();
+        };
+        $("status").onchange = () => {
+          state.filters.status = $("status").value;
+          renderList();
+        };
+        $("refresh").onclick = refresh;
+        $("import-open").onclick = () => {
+          $("import-panel").hidden = false;
+        };
+        $("import-cancel").onclick = () => {
+          $("import-panel").hidden = true;
+        };
+        $("import-submit").onclick = importText;
+        function init() {
+          if (state.initialized) return Promise.resolve();
+          state.initialized = true;
+          $("import-kind").value = "document";
+          return refresh();
+        }
+        window.AssetLibrary = { init, select, refresh, closePreview, state };
+        window.addEventListener?.("pagehide", closePreview);
+        window.addEventListener?.("beforeunload", closePreview);
+        if (document.readyState === "loading")
+          document.addEventListener("DOMContentLoaded", init);
+        else if (document.readyState) init();
+      })();
+    </script>
+  </body>
+</html>

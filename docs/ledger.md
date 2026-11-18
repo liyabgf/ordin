@@ -1,21 +1,9 @@
-# Ordin 操作账本
+# Ordin Publication Ledger
 
-## F6-P3 资产库易用性计划同步
+## AL-1 Independent Asset Archive
 
-- 脱敏同步源文档提交4679b29，只包含功能/面板/验收规划，不含个人任务或运行记录。源本体继续保持唯一开发仓；本发布副本只做脱敏整理与GitHub发布。
-
-
-## F6-P2 独立脱敏发布库边界
-
-- 本仓库是独立的脱敏发布副本，唯一GitHub remote为liyabgf/ordin；源本体在同级`ordin`，各自独立`.git`。
-- 禁止在源本体添加GitHub remote，禁止在发布库做功能开发；源改动只从明确源提交同步后审查/脱敏/测试，只有本仓库可以push。无源提交钉子不得自动覆盖发布库。
-- 发布库提交历史从匿名初始快照开始，不从源复制旧历史。不得复制state/work/connections/db/log/API key或个人任务记录。
-
-
-本仓库采用先写后做的执行纪律。
-
-本发布快照移除了开发机器的操作历史、任务内容、访问凭据和私有路径。后续变更在此登记意图、文件范围和验证结果。
-
-## 初始脱敏快照
-
-保留应用源码、测试和通用设计文档；原始开发历史未包含在此仓库。
+- Published the first asset library slice after an independent validation gate.
+- Asset content is copied into state-managed content-addressed storage; task source paths remain provenance only.
+- The source repository retains full development history. This publication repository contains a sanitized source snapshot only.
+- Do not copy source ledgers, incident reports, machine paths, runtime logs, task identifiers, databases, state/work directories or credentials into this repository.
+- Repositories: source `ordin`; redacted publication `ordin-public`; GitHub `liyabgf/ordin` (private).

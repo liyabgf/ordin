@@ -326,6 +326,7 @@
     <button data-tab="overview" aria-selected="true">首页</button>
     <button data-tab="chat" aria-selected="false">开始</button>
     <button data-tab="tickets" aria-selected="false">任务<span class="badge hidden" id="badge-tickets"></span></button>
+    <button data-tab="assets" aria-selected="false">资产</button>
     <details id="more-nav"><summary>更多</summary><div class="more-menu">
     <!-- 【U7 改名】Ticket→任务：操作者的词。data-tab 不动，所以路由、深链与真浏览器断言都不受影响。 -->
     <button data-tab="works">工作 / 项目</button>
@@ -350,6 +351,8 @@
       <p class="muted">读取中…</p>
     </section>
   </div>
+
+  <div id="tab-assets" class="hidden"><iframe id="assets-frame" title="资产库" src="/ordin/assets" style="width:100%;height:calc(100vh - 150px);border:0;border-radius:8px;background:var(--surface,#fff)"></iframe></div>
 
   <div id="tab-overview">
     <section class="card welcome-card">
@@ -4610,13 +4613,14 @@ WantedBy=default.target
     if ($('more-nav')) $('more-nav').open = false
     if (name === 'overview') void loadFriendlyHome()
     if (name === 'tickets') { const frame = $('workspace-frame'); if (!frame.getAttribute('src')) frame.setAttribute('src','/ordin/workspace') }
+    if (name === 'assets') { const frame = $('assets-frame'); if (!frame.getAttribute('src')) frame.setAttribute('src','/ordin/assets') }
     for (const button of $('tabs').children) if (button.dataset?.tab) button.setAttribute('aria-selected', String(button.dataset.tab === name))
-    for (const panel of ['overview', 'about', 'tickets', 'works', 'new', 'decisions', 'chat', 'settings', 'desk', 'prompts']) {
+    for (const panel of ['overview', 'about', 'tickets', 'assets', 'works', 'new', 'decisions', 'chat', 'settings', 'desk', 'prompts']) {
       // 【D8】lazy-init desk tab on first show
       if (panel === 'desk' && name === 'desk') {
         if (!window.__deskInited) { window.__deskInited = true; void window.__loadDeskStatus?.(); void window.__loadDeskMessages?.(true); window.__initDeskTab?.() }
       }
-      $(`tab-${panel}`).classList.toggle('hidden', panel !== name)
+      const pane = $(`tab-${panel}`); if (pane) pane.classList.toggle('hidden', panel !== name)
     }
     // 【A-4】记住上次的页：下次打开面板直接回到你在的地方。深链（#ticket=…）仍优先——
     // 那是有人给你指路，比你的习惯重要。
@@ -5059,11 +5063,12 @@ WantedBy=default.target
   const friendlyNavigate = (name, ticketId) => {
     if (name === 'workspace') {
       const frame = $('workspace-frame'); frame.src = '/ordin/workspace' + (ticketId ? '?ticket=' + encodeURIComponent(ticketId) : ''); show('tickets')
-    } else if (name === 'settings') show('settings')
+    } else if (name === 'assets') show('assets')
+    else if (name === 'settings') show('settings')
     else show('chat')
   }
   window.addEventListener('message', event => {
-    if (event.origin !== location.origin || ![$('chat-frame').contentWindow, $('workspace-frame').contentWindow].includes(event.source)) return
+    if (event.origin !== location.origin || ![$('chat-frame').contentWindow, $('workspace-frame').contentWindow, $('assets-frame').contentWindow].includes(event.source)) return
     const data = event.data
     if (data?.type === 'ordin:navigate') friendlyNavigate(data.tab, typeof data.ticketId === 'string' ? data.ticketId : '')
     if (data?.type === 'ordin:continue-task' && typeof data.ticketId === 'string') { $('chat-frame').src = '/ordin/chat?task=' + encodeURIComponent(data.ticketId); show('chat') }
@@ -5129,7 +5134,7 @@ WantedBy=default.target
       try {
         const remembered = localStorage.getItem('ordin-tab')
         if (remembered !== null && remembered !== 'overview'
-          && ['about', 'tickets', 'works', 'new', 'decisions', 'chat', 'settings', 'prompts'].includes(remembered)) {
+          && ['about', 'tickets', 'assets', 'works', 'new', 'decisions', 'chat', 'settings', 'prompts'].includes(remembered)) {
           show(remembered)
         }
       } catch { /* 存储不可用：当作没记过 */ }

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import { AssetObjects } from './asset-objects.ts'
 import { validateAssetRefs, type AssetRef } from '../core/model.ts'
 import type { Store } from './store.ts'
 
@@ -29,9 +30,11 @@ const snapshot = (row: Row): Row => { const { revisions: _history, ...rest } = r
 
 /** DB JSON content is authoritative. Filesystem projection and Coordinator reuse are separate contracts. */
 export class AssetCatalog {
-  constructor(private readonly store: Store, _stateDir: string) {}
+  constructor(private readonly store: Store, private readonly stateDir: string) {}
   private access(row: Row): boolean {
     if ((row.ownerProfileId ?? 'default') !== 'default') return false
+    // Independent managed content has its own explicit owner; source Ticket is provenance only.
+    if (row.ownerProfileId === 'default' && row.storageVersion === 1 && record(row.storage).kind === 'managed-object') return true
     const ticketId = record(row.source).ticketId
     if (ticketId === undefined) return true
     if (typeof ticketId !== 'string') return false
@@ -44,7 +47,9 @@ export class AssetCatalog {
     const source = record(row.source)
     // Expose provenance and acceptance without disclosing raw filesystem paths.
     const { path: _path, ...publicSource } = source
-    return { ...rest, revision: revision(row), source: publicSource }
+    const ticket = typeof source.ticketId === 'string' ? this.store.tickets.get(source.ticketId) : undefined
+    const storage = record(row.storage)
+    return { ...rest, revision: revision(row), managed: storage.kind === 'managed-object' || typeof row.content === 'string', size: storage.size ?? (typeof row.content === 'string' ? Buffer.byteLength(row.content) : undefined), mimeType: storage.mimeType ?? row.mimeType, description: row.description || '任务交付物', source: { ...publicSource, ...(typeof source.ticketId === 'string' ? { ticketTitle: ticket?.title, availability: ticket === undefined ? 'missing' : ticket.deleted ? 'deleted' : 'available' } : {}) } }
   }
   private require(id: string): Row {
     const row = this.store.assets.get(id)
@@ -74,6 +79,19 @@ export class AssetCatalog {
     if (typeof selected.content !== 'string' || createHash('sha256').update(selected.content, 'utf8').digest('hex') !== ref.contentHash) throw new AssetCatalogError(409, 'Asset content hash mismatch')
     return { ref, content: selected.content }
   }
+  async content(id: string): Promise<{path:string; text:boolean; base64:string; mimeType:string; size:number}> {
+    const row = this.require(id)
+    if (row.deletedAt !== undefined || row.deleted !== undefined) throw new AssetCatalogError(409, 'Asset is deleted')
+    const storage = record(row.storage)
+    let bytes: Buffer
+    if (storage.kind === 'managed-object' && row.storageVersion === 1 && typeof storage.objectKey === 'string') bytes = await new AssetObjects(this.stateDir).read(storage.objectKey)
+    else if (record(row.source).type === 'operator-import' && typeof row.content === 'string') bytes = Buffer.from(row.content, 'utf8')
+    else throw new AssetCatalogError(409, '此旧资产尚未独立保存，请从源任务重新归档')
+    if (createHash('sha256').update(bytes).digest('hex') !== row.contentHash) throw new AssetCatalogError(409, 'Asset content hash mismatch')
+    const mimeType = String(storage.mimeType ?? row.mimeType ?? 'application/octet-stream')
+    const text = mimeType.startsWith('text/') || ['application/json','application/xml'].includes(mimeType)
+    return { path: String(row.name), text, base64: bytes.toString('base64'), mimeType, size: bytes.length }
+  }
   get(id: string): Row { return this.view(this.require(id)) }
   revisions(id: string): Row[] { const row = this.require(id); return [...history(row), snapshot(row)].map(value => this.view(value)) }
   import(input: unknown): Row {
@@ -97,7 +115,7 @@ export class AssetCatalog {
     return this.store.atomic(() => {
       const row = this.require(id)
       if (row.deletedAt !== undefined || row.deleted !== undefined) throw new AssetCatalogError(409, 'Asset is deleted')
-      if (record(row.source).type !== 'operator-import') throw new AssetCatalogError(409, 'Ticket assets are immutable here')
+      if (record(row.source).type !== 'operator-import' && !(row.storageVersion === 1 && record(row.storage).kind === 'managed-object')) throw new AssetCatalogError(409, 'Legacy Ticket assets are immutable here')
       if (expected !== undefined && revision(row) !== expected) throw new AssetCatalogError(409, 'Asset revision conflict')
       const at = new Date().toISOString()
       const prior = snapshot(row)

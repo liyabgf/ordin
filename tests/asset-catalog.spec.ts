@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createHash } from 'node:crypto'
+import { mkdir, writeFile, rm } from 'node:fs/promises'
+import { AssetRegistration } from '../src/app/assets.ts'
 import { join } from 'node:path'
 import { boot } from '../src/app/boot.ts'
 import { resolveConfig } from '../src/app/config.ts'
@@ -23,6 +25,27 @@ async function fixture() {
 }
 const input = { text: 'hello catalog', name: 'Notes', description: 'operator notes', kind: 'document', tags: ['local'], mimeType: 'text/plain', contentKind: 'text' }
 describe('F2-B2 asset catalog real Runtime HTTP', () => {
+  it('serves independent delivered bytes after source task deletion and rejects foreign owners and corrupted content', async()=>{
+    const f=await fixture();try{
+      const id=f.runtime.engine.createTicket({title:'Producer',text:'work'}).ticketId!;
+      const original=f.runtime.engine.require(id), directory=join(f.runtime.machine.workRoot,id), at=new Date().toISOString();
+      await mkdir(directory,{recursive:true});await writeFile(join(directory,'report.md'),'你好 <script>bad()</script>');
+      const ticket={...original,execution:{name:id,directory},ended:{outcome:'done' as const,by:'system' as const,at,reason:'done'},result:{summary:'Independent report',files:['report.md'],at},acceptance:{status:'accepted' as const}};
+      f.runtime.store.tickets.save(ticket);
+      const registration=new AssetRegistration({assets:f.runtime.store.assets,workRoot:f.runtime.machine.workRoot,stateDir:f.runtime.machine.stateDir});
+      const [a]=await registration.registerTicket(ticket);
+      const before=await f.request('assets/'+a!.id+'/content');expect(before.status).toBe(200);expect(Buffer.from(before.data.base64,'base64').toString()).toBe('你好 <script>bad()</script>');
+      expect((await f.request('assets/'+a!.id)).data).toMatchObject({managed:true,source:{ticketTitle:'Producer',availability:'available'}});
+      f.runtime.store.tickets.remove(id);await rm(directory,{recursive:true});
+      expect((await f.request('assets/'+a!.id)).data.source.availability).toBe('missing');
+      expect((await f.request('assets/'+a!.id+'/content')).data.base64).toBe(before.data.base64);
+      const updated=await f.request('assets/'+a!.id,'PATCH',{name:'My report',expectedRevision:1});expect(updated.status).toBe(200);
+      const row=f.runtime.store.assets.get(a!.id)!;
+      f.runtime.store.assets.save({...row,ownerProfileId:'other'} as any);expect((await f.request('assets/'+a!.id+'/content')).status).toBe(403);
+      f.runtime.store.assets.save({...row,contentHash:'0'.repeat(64)} as any);expect((await f.request('assets/'+a!.id+'/content')).status).toBe(409);
+    }finally{await f.close()}
+  })
+
   it('imports, searches, deduplicates only identical explicit imports, versions labels, archives and soft deletes', async () => {
     const f = await fixture()
     try {

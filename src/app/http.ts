@@ -452,6 +452,7 @@ function table(host: HttpHost): readonly Route[] {
   return [
     route('GET', 'state', () => stateView(host)),
     route('GET', 'assets', ({ query }) => { if (!host.assets) throw new RouteError(501, 'Asset catalog is not wired'); return { assets: host.assets.list(query) } }),
+    route('GET', 'assets/:id/content', ({ params }) => { if (!host.assets) throw new RouteError(501, 'Asset catalog is not wired'); return host.assets.content(params.id!) }),
     route('GET', 'assets/:id', ({ params }) => { if (!host.assets) throw new RouteError(501, 'Asset catalog is not wired'); return host.assets.get(params.id!) }),
     route('GET', 'assets/:id/revisions', ({ params }) => { if (!host.assets) throw new RouteError(501, 'Asset catalog is not wired'); return { revisions: host.assets.revisions(params.id!) } }),
     route('POST', 'assets/import', async ({ body }) => { if (!host.assets) throw new RouteError(501, 'Asset catalog is not wired'); return host.assets.import(await body(6 * 1_048_576 + 16384)) }),
@@ -1005,9 +1006,9 @@ export async function serve(host: HttpHost, options: { port?: number; host?: str
     const api = prefix + '/api/'
     if (!url.pathname.startsWith(api)) {
       // The standalone chat page lives beside the old panel while the panel is rebuilt (M2-D).
-      if (method === 'GET' && ['/chat', '/chat/', '/workspace', '/workspace/'].some(path => url.pathname === prefix + path)) {
+      if (method === 'GET' && ['/chat', '/chat/', '/workspace', '/workspace/', '/assets', '/assets/'].some(path => url.pathname === prefix + path)) {
         try {
-          const html = readFileSync(packageFile(url.pathname.startsWith(prefix + '/workspace') ? 'panel/workspace.html' : 'panel/chat.html'), 'utf8')
+          const html = readFileSync(packageFile(url.pathname.startsWith(prefix + '/workspace') ? 'panel/workspace.html' : url.pathname.startsWith(prefix + '/assets') ? 'panel/assets.html' : 'panel/chat.html'), 'utf8')
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
           res.end(html)
         } catch (error) {
