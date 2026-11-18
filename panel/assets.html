@@ -15,6 +15,7 @@ header{max-width:1240px;margin:auto;padding:28px 28px 18px}h1{font-size:26px;mar
 .detail-head,.preview-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}.detail-head>div{min-width:0}.description{white-space:pre-wrap;overflow-wrap:anywhere}.section{margin-top:20px;padding-top:14px;border-top:1px solid var(--line)}.field{display:flex;flex-direction:column;gap:6px;margin:12px 0;min-width:0}.field label{font-size:13px;color:var(--muted)}.field input,.field textarea,.field select{display:block;width:100%;min-width:0;max-width:100%;padding:10px;border:1px solid var(--line);border-radius:6px;background:#fff}.field textarea{min-height:90px;resize:vertical}.actions{display:flex;gap:8px;flex-wrap:wrap}.actions .btn{max-width:100%;white-space:normal;overflow-wrap:anywhere}.source-link{background:none;border:0;padding:0;min-height:44px;text-align:left;color:var(--teal);text-decoration:underline;overflow-wrap:anywhere}
 .preview{min-width:0}.preview-head{margin-bottom:10px}.preview pre{padding:14px;margin:0;background:#f4f7f5;border-radius:6px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:480px;overflow:auto;font:13px/1.7 ui-monospace,monospace}.preview img{max-width:100%;height:auto;display:block}.preview a{display:inline-block;overflow-wrap:anywhere;min-height:44px;color:var(--teal)}
 @media(max-width:760px){header{padding:18px 14px 10px}.toolbar{padding:8px 14px 12px}.toolbar input{min-width:120px}.layout{padding:8px 14px 24px;grid-template-columns:minmax(0,1fr);gap:12px}.panel{padding:14px}.error{margin:0 14px 12px}}
+.reference-row {display:block;max-width:100%;white-space:normal;overflow-wrap:anywhere}
 </style>
   </head>
   <body>
@@ -223,19 +224,20 @@ header{max-width:1240px;margin:auto;padding:28px 28px 18px}h1{font-size:26px;mar
                 ? "来源任务已删除"
                 : "暂无可用来源",
             );
+          return taskButton(source.ticketId, source.ticketTitle || source.ticketId);
+        }
+        function taskButton(ticketId, label) {
           const b = document.createElement("button");
           b.className = "source-link";
           b.type = "button";
-          b.textContent = source.ticketTitle || source.ticketId;
-          b.onclick = () =>
-            window.parent?.postMessage(
-              {
-                type: "ordin:navigate",
-                tab: "workspace",
-                ticketId: source.ticketId,
-              },
-              location.origin,
-            );
+          b.textContent = label;
+          b.onclick = () => {
+            if (window.parent === window) {
+              location.assign("/ordin/workspace?ticket=" + encodeURIComponent(ticketId));
+              return;
+            }
+            window.parent?.postMessage({ type: "ordin:navigate", tab: "workspace", ticketId }, location.origin);
+          };
           return b;
         }
         function renderDetail() {
@@ -265,6 +267,8 @@ header{max-width:1240px;margin:auto;padding:28px 28px 18px}h1{font-size:26px;mar
             esc(a.revision) +
             " · " +
             esc(a.updatedAt || "更新时间未知") +
+            (typeof a.mimeType === "string" && a.mimeType ? " · " + esc(a.mimeType) : "") +
+            (Number.isSafeInteger(a.size) && a.size >= 0 ? " · " + a.size + " 字节" : "") +
             '</p><div class="section"><b>来源</b><p id="asset-source"></p></div><div class="section"><b>元数据</b><div class="field"><label for="edit-name">名称</label><input style="width:100%;max-width:100%;box-sizing:border-box" id="edit-name" value="' +
             esc(draft.name) +
             '"></div><div class="field"><label for="edit-description">说明</label><textarea style="width:100%;max-width:100%;box-sizing:border-box" id="edit-description">' +
@@ -283,12 +287,19 @@ header{max-width:1240px;margin:auto;padding:28px 28px 18px}h1{font-size:26px;mar
           relationPanel.innerHTML = '<b>相关资产</b>';
           if (a.relations?.error) { const message = document.createElement("p"); message.className = "muted"; message.textContent = "关系暂不可用：" + a.relations.error; relationPanel.appendChild(message); }
           const related = a.relations?.related || [];
-          if (!related.length) { const empty = document.createElement("p"); empty.className = "muted"; empty.textContent = "暂无来源关系；未推测语义相关性。"; relationPanel.appendChild(empty); }
+          if (!related.length) { const empty = document.createElement("p"); empty.className = "muted"; empty.textContent = "暂无同源或共同选用的资产。"; relationPanel.appendChild(empty); }
           for (const item of related) { const button = document.createElement("button"); button.type="button"; button.className="source-link"; button.textContent=String(item.name)+" · "+String(item.reason); button.onclick=()=>select(item.id); relationPanel.appendChild(button); }
           const refs = a.relations?.references || [];
           const refSection = document.createElement("div"); refSection.className="section"; const refTitle=document.createElement("b"); refTitle.textContent="任务引用记录"; refSection.appendChild(refTitle);
           if (!refs.length) { const empty=document.createElement("p"); empty.className="muted"; empty.textContent="尚无固定版本的任务引用"; refSection.appendChild(empty); }
-          for (const ref of refs) { const row=document.createElement("p"); row.className="muted"; row.textContent=String(ref.title||ref.ticketId)+" · v"+String(ref.revision)+" · 已选择，尚不能据此确认执行端已读取"; refSection.appendChild(row); }
+          for (const ref of refs) {
+            const label = String(ref.title || ref.ticketId || "任务") + " · v" + String(ref.revision) + " · " +
+              (ref.state === "selected" ? "已选择，尚不能据此确认执行端已读取" : String(ref.reason || "状态未知"));
+            const row = typeof ref.ticketId === "string" && ref.ticketId ? taskButton(ref.ticketId, label) : document.createElement("p");
+            row.classList?.add("reference-row");
+            if (row.tagName?.toLowerCase() === "p") row.textContent = label;
+            refSection.appendChild(row);
+          }
           $("detail").appendChild(relationPanel); $("detail").appendChild(refSection);
           ["edit-name", "edit-description", "edit-tags"].forEach((id) => {
             $(id).oninput = rememberDraft;
@@ -297,6 +308,60 @@ header{max-width:1240px;margin:auto;padding:28px 28px 18px}h1{font-size:26px;mar
           $("archive-asset").onclick = toggleArchive;
           $("load-content").onclick = () => loadContent(a.id);
           $("preview-close").onclick = closePreview;
+          const suggest = document.createElement("button");
+          suggest.id = "suggest-description";
+          suggest.type = "button";
+          suggest.className = "btn";
+          suggest.textContent = "生成 AI 说明建议";
+          suggest.disabled = !a.managed || a.archived === true;
+          const suggestion = document.createElement("p");
+          suggestion.id = "description-suggestion";
+          suggestion.className = "description muted";
+          suggestion.setAttribute("role", "status");
+          suggestion.textContent = "生成时会将最多 8 KiB 文本摘录发送给已配置的模型。";
+          const adopt = document.createElement("button");
+          adopt.id = "adopt-description";
+          adopt.className = "btn";
+          adopt.type = "button";
+          adopt.textContent = "填入说明草稿";
+          adopt.hidden = true;
+          suggest.onclick = async () => {
+            if (suggest.disabled) return;
+            adopt.hidden = true;
+            suggest.disabled = true;
+            suggestion.textContent = "正在生成说明建议…";
+            try {
+              const result = await api("assets/" + encodeURIComponent(a.id) + "/description-suggestion", {
+                method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ revision: a.revision }),
+              });
+              if (state.detail !== a) return;
+              if (result.revision !== a.revision || typeof result.description !== "string" || !result.description.trim()) throw Error("建议与当前版本不匹配");
+              adopt.onclick = () => {
+                if (state.detail !== a || state.pending || adopt.hidden) return;
+                const field = $("edit-description");
+                const saved = String(a.description || "").replace(/\r\n?/g, "\n");
+                if (field.value !== saved) {
+                  suggestion.textContent = "说明已有未保存修改；未覆盖草稿。建议：" + result.description;
+                  return;
+                }
+                field.value = result.description;
+                rememberDraft();
+                adopt.hidden = true;
+                suggestion.textContent = "已填入说明草稿，尚未保存。";
+                field.focus?.();
+              };
+              adopt.hidden = false;
+              suggestion.textContent = "AI 建议（未保存，" + result.model + " · v" + result.revision + " · " + result.generatedAt + "）：" + result.description;
+            } catch (e) {
+              suggestion.textContent = "说明建议不可用：" + e.message;
+            } finally {
+              suggest.disabled = false;
+            }
+          };
+          // Append to this render only; a late response cannot replace another asset's details.
+          $("detail").appendChild(suggest);
+          $("detail").appendChild(suggestion);
+          $("detail").appendChild(adopt);
           const use=document.createElement("button"); use.type="button";use.id="use-in-new-task";use.className="btn primary";use.textContent="添加到任务草稿";use.disabled=!a.managed || a.status!=="active" || a.archived===true;use.onclick=()=>window.parent?.postMessage({type:"ordin:use-asset",assetRef:{id:a.id,revision:a.revision,contentHash:a.contentHash}},location.origin);$("detail").appendChild(use);
         }
         async function refresh() {

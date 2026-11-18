@@ -2,6 +2,10 @@
 
 先写后做：先登记改动意图、文件范围和验证方式，再进行实现或发布。
 
+## Asset library follow-up
+
+- Scope: reviewed changes to asset, home and workspace panels, catalog, runtime, executor, HTTP, DSH service and router, and six regression suites. Keep the source ledger, runtime evidence and credentials out of this repository. Verify the staged publication tree in isolation before release.
+
 ## Task asset references
 
 - The publication includes fixed-version asset selection for new work and durable asset inputs for open tasks. Queued does not claim consumption.

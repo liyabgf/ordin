@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { createHash } from 'node:crypto'
 import { mkdir, writeFile, rm } from 'node:fs/promises'
 import { AssetRegistration } from '../src/app/assets.ts'
@@ -25,20 +27,85 @@ async function fixture() {
 }
 const input = { text: 'hello catalog', name: 'Notes', description: 'operator notes', kind: 'document', tags: ['local'], mimeType: 'text/plain', contentKind: 'text' }
 describe('F2-B2 asset catalog real Runtime HTTP', () => {
+  it('generates only on explicit request, bounds the excerpt, and leaves the asset unchanged', async () => {
+    const f = await fixture()
+    const calls: any[] = []
+    let fail = false
+    const model = createServer(async (req, res) => {
+      const chunks: Buffer[] = []
+      for await (const block of req) chunks.push(Buffer.from(block))
+      calls.push(JSON.parse(Buffer.concat(chunks).toString()))
+      if (fail) { res.writeHead(500); res.end('upstream-private-details'); return }
+      res.setHeader('content-type', 'text/event-stream')
+      res.end('data: '+JSON.stringify({choices:[{delta:{content:'可供后续任务参考的材料。'},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n')
+    })
+    await new Promise<void>(resolve => model.listen(0, '127.0.0.1', resolve))
+    try {
+      const asset = (await f.request('assets/import','POST',{...input,text:'x'.repeat(9000)+'private-tail'})).data
+      const path = 'assets/'+asset.id
+      expect((await f.request(path+'/description-suggestion','POST',{revision:1})).status).toBe(409)
+      await f.runtime.saveModelConfig({baseUrl:'http://127.0.0.1:'+(model.address() as AddressInfo).port+'/v1',model:'local-fixture',provider:'OpenAI compatible',models:['local-fixture'],temperature:0.2,maxTokens:512,apiKeyEnv:''})
+      await f.request(path)
+      expect((await f.request(path+'/description-suggestion','POST',{revision:2})).status).toBe(409)
+      expect(calls).toHaveLength(0)
+      const reply = await f.request(path+'/description-suggestion','POST',{revision:1})
+      expect(reply.status).toBe(200)
+      expect(reply.data).toMatchObject({description:'可供后续任务参考的材料。',revision:1,model:'local-fixture',generatedAt:expect.any(String)})
+      expect(calls).toHaveLength(1)
+      expect(JSON.parse(calls[0].messages[1].content).excerpt).toBe('x'.repeat(8192))
+      expect(calls[0].max_tokens).toBe(160)
+      fail = true
+      const failed = await f.request(path+'/description-suggestion','POST',{revision:1})
+      expect(failed.status).toBe(409)
+      expect(JSON.stringify(failed.data)).not.toContain('upstream-private-details')
+      expect((await f.request(path)).data).toEqual(asset)
+      expect((await f.request(path+'/content')).status).toBe(200)
+    } finally { await f.close(); await new Promise<void>(resolve => model.close(() => resolve())) }
+  })
+  it('discovers co-selected assets from initial pins and supplements without leaking private or archived rows', async () => {
+    const f = await fixture()
+    try {
+      const create = async (name: string) => (await f.request('assets/import','POST',{...input,name})).data
+      const [anchor, peer, hidden, archived, unrelated] = await Promise.all(['Anchor','Peer','Hidden','Archived','Unrelated'].map(create))
+      const pin = (a: any) => ({id:a.id,revision:1,contentHash:a.contentHash})
+      const ticket = f.runtime.engine.require(f.runtime.engine.createTicket({title:'Public task',text:'work'}).ticketId!)
+      f.runtime.store.tickets.save({...ticket,assetRefs:[pin(anchor),pin(hidden),pin(archived)]})
+      f.runtime.engine.assetNote(ticket.id,'supplement',[pin(peer)],'')
+      f.runtime.engine.assetNote(ticket.id,'repeat',[pin(peer)],'')
+      for (const [a, changes] of [[hidden,{ownerProfileId:'other'}],[archived,{archived:true}]] as const) {
+        f.runtime.store.assets.save({...f.runtime.store.assets.get(a.id)!,...changes} as any)
+      }
+      const now = new Date().toISOString()
+      f.runtime.store.conversations.save({id:'foreign',profileId:'other',createdAt:now,lastMessageAt:now})
+      const foreign = f.runtime.engine.require(f.runtime.engine.createTicket({title:'Foreign task',text:'private work'}).ticketId!)
+      f.runtime.store.tickets.save({...foreign,conversationId:'foreign',assetRefs:[pin(anchor),pin(unrelated)]})
+      const result = await f.request('assets/'+anchor.id+'/relations')
+      expect(result.status).toBe(200)
+      expect(result.data.related).toEqual([expect.objectContaining({id:peer.id, taskCount:1, reason:'曾在 1 个任务中共同选用；不代表已使用'})])
+      expect((await f.request('assets/'+peer.id+'/relations')).data.related.map((a: any)=>a.id)).toEqual([anchor.id])
+    } finally { await f.close() }
+  })
   it('persists pinned asset inputs idempotently and rejects unauthorized or changed requests',async()=>{
     const f=await fixture();try{
       const asset=(await f.request('assets/import','POST',input)).data;
       const id=f.runtime.engine.createTicket({title:'Active consumer',text:'work'}).ticketId!;
       const payload={requestId:'request-one',text:'Use notes',assetRefs:[{id:asset.id,revision:1,contentHash:asset.contentHash}]};
       const first=await f.request('tickets/'+id+'/asset-inputs','POST',payload);expect(first.status).toBe(200);expect(first.data.deliveryState).toBe('queued');
+      const trace=()=>f.request('assets/'+asset.id+'/relations');
+      expect((await trace()).data.references).toMatchObject([{ticketId:id,inputId:first.data.inputId,revision:1,state:'queued'}]);
       const repeated=await f.request('tickets/'+id+'/asset-inputs','POST',payload);expect(repeated.data.inputId).toBe(first.data.inputId);expect(f.runtime.engine.require(id).inputs.filter(i=>i.kind==='note' && i.requestId==='request-one')).toHaveLength(1);
       expect((await f.request('tickets/'+id+'/asset-inputs','POST',{...payload,text:'different'})).status).not.toBe(200);
       expect((await f.request('tickets/'+id+'/asset-inputs','POST',{...payload,requestId:'bad-hash',assetRefs:[{...payload.assetRefs[0],contentHash:'0'.repeat(64)}]})).status).toBe(409);
       expect((await f.request('tickets/'+id+'/asset-inputs','POST',{...payload,requestId:'path',assetRefs:[{path:'/etc/passwd'}]})).status).not.toBe(200);
       f.runtime.engine.stopTicket(id,'stop');expect((await f.request('tickets/'+id+'/asset-inputs','POST',{...payload,requestId:'new-after-stop'})).status).toBe(409);
       expect((await f.request('tickets/'+id+'/asset-inputs','POST',payload)).data.inputId).toBe(first.data.inputId);
+      expect((await trace()).data.references[0].state).toBe('not-delivered');
+      const before=f.runtime.engine.require(id);
+      f.runtime.store.tickets.save({...before,inputs:before.inputs.map(i=>i.id===first.data.inputId?{...i,deliveredAt:new Date().toISOString()}:i)});
+      expect((await trace()).data.references[0]).toMatchObject({state:'delivered',reason:expect.stringContaining('不代表')});
       const at=new Date().toISOString();f.runtime.store.conversations.save({id:'foreign',profileId:'other',createdAt:at,lastMessageAt:at});const ticket=f.runtime.engine.require(id);f.runtime.store.tickets.save({...ticket,conversationId:'foreign'});
       expect((await f.request('tickets/'+id+'/asset-inputs','POST',payload)).status).toBe(403);
+      expect((await trace()).data.references).toEqual([]);
     }finally{await f.close()}
   });
   it('returns same-task provenance and explicit pinned-reference records without claiming use', async()=>{

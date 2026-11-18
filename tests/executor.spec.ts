@@ -1106,6 +1106,23 @@ describe('stuck launches', () => {
     expect(context.store.tickets.get(id)?.executionAttempt).toBeUndefined()
   })
 
+  it.each(['dsh', 'codex', 'claude'] as const)('does not launch %s when its pinned skill is disabled during prepare', async backend => {
+    const c = await harness()
+    const skill = c.prompts.saveSkill({ name: 'revoked', title: 'Revoked', description: 'fixture', content: 'Synthetic skill' })
+    const skillRefs = [{ name: skill.name, revision: skill.revision!, contentHash: skill.contentHash! }]
+    const id = c.engine.createTicket({ title: 'skill revocation', text: 'work', skillRefs }).ticketId!
+    c.engine.annotate(id, { workerBackend: backend })
+    c.driver.prepareBehavior = spec => {
+      expect(spec.prompt).toContain('revoked revision 1')
+      c.prompts.setSkillEnabled(skill.name, false)
+      return { ...spec, preparedAt: now() }
+    }
+    await c.settle()
+    expect(c.driver.prepared).toHaveLength(1)
+    expect(c.driver.launches).toEqual([])
+    expect(c.engine.require(id).executionAttempt).toBeUndefined()
+  })
+
   it('does not launch after a stop commits during prepare', async () => {
     const context = await harness()
     let release!: () => void
@@ -1167,15 +1184,17 @@ describe('files that came with the request', () => {
 })
 
 describe('the prompt and environment a worker is given', () => {
-  it('F2-C1 launches only the selected historical revision after a content edit', async () => {
+  it.each(['dsh', 'codex', 'claude'] as const)('AL-5 sends only the pinned skill revision to %s', async backend => {
     const c = await harness()
     const old = c.prompts.saveSkill({ name: 'chosen', title: 'Chosen', description: 'old craft', content: 'EXACT OLD CONTENT' })
     const refs = [{ name: old.name, revision: old.revision!, contentHash: old.contentHash! }]
     const id = c.engine.createTicket({ title: 'pinned', text: 'perform request', skillRefs: refs }).ticketId!
     c.prompts.saveSkill({ name: 'chosen', title: 'Chosen', description: 'new craft', content: 'DIFFERENT NEW CONTENT' })
     c.prompts.saveSkill({ name: 'unrequested', title: 'Other', description: 'other', content: 'OTHER CONTENT' })
+    c.engine.annotate(id, { workerBackend: backend })
     await c.settle()
     expect(c.driver.launches).toHaveLength(1)
+    expect(c.driver.launches[0]).toMatchObject({ backend, ticketId: id })
     const prompt = c.driver.launches[0]!.prompt
     const path = join(c.engine.require(id).execution!.directory, 'skills', old.name, 'r1-' + old.contentHash, 'SKILL.md')
     expect(prompt).toContain('perform request')

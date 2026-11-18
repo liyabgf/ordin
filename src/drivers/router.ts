@@ -7,6 +7,7 @@ export class DriverRouter implements WorkerDriver {
   get backend(): BackendKind { return this.selected() }
   probe(backend = this.selected()): Promise<DriverHealth> { return this.drivers[backend].probe() }
   async prepare(spec: WorkerSpec, session?: BackendSession): Promise<LaunchSpec> {
+    if (spec.mcpReport !== undefined) throw new Error("Tool registration is not supported by Ordin’s worker router")
     const driver = this.drivers[session?.backend ?? spec.backend ?? this.selected()]
     const prepared = await driver.prepare(spec, session)
     this.prepared.set(prepared, driver)

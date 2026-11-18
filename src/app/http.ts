@@ -143,6 +143,7 @@ export interface HttpHost {
   raiseDecision(title: string, detail: string, source: string): string
   readonly store: Store
   readonly assets?: AssetCatalog
+  suggestAssetDescription?(id: string, expectedRevision: number): Promise<{ description: string; revision: number; model: string; generatedAt: string }>
   readonly memories?: Memories
   readonly health: HealthBoard
   readonly prompts: Prompts
@@ -453,6 +454,11 @@ function table(host: HttpHost): readonly Route[] {
   return [
     route('GET', 'state', () => stateView(host)),
     route('GET', 'assets', ({ query }) => { if (!host.assets) throw new RouteError(501, 'Asset catalog is not wired'); return { assets: host.assets.list(query) } }),
+    route('POST', 'assets/:id/description-suggestion', async ({ params, body }) => {
+      if (!host.suggestAssetDescription) throw new RouteError(501, 'Asset description suggestions are not wired')
+      const { revision } = z.object({ revision: z.number().int().positive() }).strict().parse(await body(4096))
+      return host.suggestAssetDescription(params.id!, revision)
+    }),
     route('GET', 'assets/:id/content', ({ params }) => { if (!host.assets) throw new RouteError(501, 'Asset catalog is not wired'); return host.assets.content(params.id!) }),
     route('GET', 'assets/:id', ({ params }) => { if (!host.assets) throw new RouteError(501, 'Asset catalog is not wired'); return host.assets.get(params.id!) }),
     route('GET', 'assets/:id/relations', ({ params }) => { if (!host.assets) throw new RouteError(501, 'Asset catalog is not wired'); return host.assets.relations(params.id!) }),

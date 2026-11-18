@@ -182,12 +182,45 @@ function fixture() {
   };
 }
 describe("asset library actual JavaScript", () => {
+  it("adopts a suggestion only into an unchanged draft and does not save it", async () => {
+    const f = fixture(); await f.api.init(); await f.api.select("a1");
+    const original = f.fetch.getMockImplementation();
+    f.fetch.mockImplementation(async (url,opt) => url.endsWith("/description-suggestion")
+      ? response({revision:f.api.state.detail.revision,description:"Suggested",model:"fixture",generatedAt:"now"}) : original(url,opt));
+    const field = f.nodes["edit-description"], baseline = field.value;
+    const find = id => f.nodes.detail.children.find(el => el.id === id);
+    await find("suggest-description").onclick();
+    const adopt = find("adopt-description");
+    expect(adopt.hidden).toBe(false);
+    field.value = "Manual draft";
+    adopt.onclick();
+    expect(field.value).toBe("Manual draft");
+    field.value = baseline;
+    adopt.onclick();
+    expect(field.value).toBe("Suggested");
+    expect(f.api.state.drafts.a1.description).toBe("Suggested");
+    expect(f.calls.some(([,options])=>options.method === "PATCH")).toBe(false);
+    await f.api.select("a2");
+    adopt.onclick();
+    expect(f.nodes["edit-description"].value).not.toBe("Suggested");
+  });
   it("renders and navigates explicit relations, labels selection honestly and tolerates relation-only failures", async()=>{
-    const f=fixture();await f.api.init();await f.api.select("a1");
+    const f=fixture();f.assets[0].mimeType='text/plain';f.assets[0].size=0;await f.api.init();await f.api.select("a1");
+    expect(f.nodes.detail.innerHTML).toContain('text/plain · 0 字节');
+    const link=f.nodes.detail.children[1].children[1];
+    expect(link.tagName).toBe('button');
+    link.onclick();
+    expect(f.window.parent.postMessage).toHaveBeenCalledWith({type:'ordin:navigate',tab:'workspace',ticketId:'t1'},'http://ordin.test');
     const related=f.nodes.detail.children[0];
     expect(related.children[0].textContent).toContain("同一任务产出");
     expect(f.nodes.detail.children[1].children[1].textContent).toContain("尚不能据此确认执行端已读取");
     await related.children[0].onclick();expect(f.api.state.selected).toBe("a2");
+    const fetchBeforeReceipt = f.fetch.getMockImplementation();
+    f.fetch.mockImplementation(async (url, opt) => url.endsWith("/relations") ? response({references:[{title:"Consumer",revision:1,state:"queued",reason:"已保存待投递"},{title:"Consumer",revision:1,state:"delivered",reason:"已送达执行端；不代表已读取或使用成功"},{title:"Consumer",revision:1,state:"not-delivered",reason:"任务结束时尚未送达"}]}) : fetchBeforeReceipt(url,opt));
+    await f.api.select("a1");
+    expect(f.nodes.detail.children[1].children.slice(1).map(row=>row.textContent)).toEqual([
+      "Consumer · v1 · 已保存待投递", "Consumer · v1 · 已送达执行端；不代表已读取或使用成功", "Consumer · v1 · 任务结束时尚未送达",
+    ]);
     const original=f.fetch.getMockImplementation();f.fetch.mockImplementation(async(url,opt)=>url.endsWith("/relations")?response({error:"relation offline"},false):original(url,opt));
     await f.api.select("a1");expect(f.api.state.detail.id).toBe("a1");
     expect(f.nodes.detail.children[0].children[0].textContent).toContain("关系暂不可用：relation offline");

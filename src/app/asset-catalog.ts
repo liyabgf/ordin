@@ -107,8 +107,7 @@ export class AssetCatalog {
     this.resolveMetadata(pinned.ref)
     return {...pinned,bytes}
   }
-  async content(id: string): Promise<{path:string; text:boolean; base64:string; mimeType:string; size:number}> {
-    const row = this.require(id)
+  private async storedContent(row: Row) {
     if (row.deletedAt !== undefined || row.deleted !== undefined) throw new AssetCatalogError(409, 'Asset is deleted')
     const storage = record(row.storage)
     let bytes: Buffer
@@ -118,20 +117,76 @@ export class AssetCatalog {
     if (createHash('sha256').update(bytes).digest('hex') !== row.contentHash) throw new AssetCatalogError(409, 'Asset content hash mismatch')
     const mimeType = String(storage.mimeType ?? row.mimeType ?? 'application/octet-stream')
     const text = mimeType.startsWith('text/') || ['application/json','application/xml'].includes(mimeType)
+    return { bytes, mimeType, text }
+  }
+  async content(id: string): Promise<{path:string; text:boolean; base64:string; mimeType:string; size:number}> {
+    const row = this.require(id)
+    const { bytes, mimeType, text } = await this.storedContent(row)
     return { path: String(row.name), text, base64: bytes.toString('base64'), mimeType, size: bytes.length }
+  }
+  async descriptionSample(id: string, expected: number) {
+    const row = this.require(id)
+    this.assertDescriptionRevision(id, expected, row.contentHash)
+    const { bytes, text } = await this.storedContent(row)
+    this.assertDescriptionRevision(id, expected, row.contentHash)
+    if (!text || bytes.includes(0)) throw new AssetCatalogError(409, '仅支持文本资产的说明建议')
+    const sample = new TextDecoder().decode(bytes.subarray(0, 8192), { stream: bytes.length > 8192 }).trim()
+    if (!sample) throw new AssetCatalogError(409, '没有可供整理的文本')
+    return { sample, revision: revision(row), contentHash: row.contentHash }
+  }
+  assertDescriptionRevision(id: string, expected: number, hash: unknown): void {
+    const row = this.require(id)
+    if (row.archived || row.deletedAt !== undefined || row.deleted !== undefined || revision(row) !== expected || row.contentHash !== hash) {
+      throw new AssetCatalogError(409, '资产版本或状态已变化，请刷新后重试')
+    }
   }
   /** Only explicit provenance and pinned references; no inferred use or semantic scores. */
   relations(id: string): { related: Row[]; references: Row[] } {
     const asset = this.require(id)
     if (asset.deletedAt !== undefined || asset.deleted !== undefined) throw new AssetCatalogError(409, 'Asset is deleted')
     const sourceId = record(asset.source).ticketId
-    const related = typeof sourceId === 'string' ? this.store.assets.list({ includeArchived: true, limit: 2_147_483_647 })
+    const related: Row[] = typeof sourceId === 'string' ? this.store.assets.list({ includeArchived: true, limit: 2_147_483_647 })
       .filter(row => row.id !== id && row.deletedAt === undefined && row.deleted === undefined && this.access(row) && record(row.source).ticketId === sourceId)
       .slice(0, 50).map(row => ({ id: row.id, name: row.name, revision: revision(row), kind: row.kind, reason: '同一任务产出' })) : []
+    const coSelected = new Map<string, number>()
     const references = this.store.tickets.list()
       .filter(ticket => ticket.deleted === undefined && (ticket.conversationId === undefined || this.store.conversations.get(ticket.conversationId)?.profileId === 'default'))
-      .flatMap(ticket => (ticket.assetRefs ?? []).filter(ref => ref.id === id).map(ref => ({ ticketId: ticket.id, title: ticket.title, revision: ref.revision, contentHash: ref.contentHash, state: 'selected', ended: ticket.ended !== undefined, reason: '任务选择了此版本；不代表已读取或使用成功' })))
+      .flatMap(ticket => {
+        const ids = new Set((ticket.assetRefs ?? []).map(ref => ref.id))
+        for (const input of ticket.inputs) {
+          if (input.kind === 'note') for (const ref of input.assetRefs ?? []) ids.add(ref.id)
+        }
+        if (!ids.has(id)) return []
+        for (const peer of ids) {
+          if (peer !== id) coSelected.set(peer, (coSelected.get(peer) ?? 0) + 1)
+        }
+        const ended = ticket.ended !== undefined
+        const selected = (ticket.assetRefs ?? []).filter(ref => ref.id === id).map(ref => ({
+          ticketId: ticket.id, title: ticket.title, revision: ref.revision, contentHash: ref.contentHash,
+          state: 'selected', ended, reason: '任务选择了此版本；不代表已读取或使用成功',
+        }))
+        const additions = ticket.inputs.flatMap(input => {
+          if (input.kind !== 'note' || !input.assetRefs) return []
+          const state = input.deliveredAt !== undefined ? 'delivered' : ended ? 'not-delivered' : 'queued'
+          const reason = state === 'delivered' ? '已送达执行端；不代表已读取或使用成功'
+            : state === 'not-delivered' ? '任务结束时尚未送达' : '已保存待投递'
+          return input.assetRefs.filter(ref => ref.id === id).map(ref => ({
+            ticketId: ticket.id, title: ticket.title, inputId: input.id, revision: ref.revision,
+            contentHash: ref.contentHash, state, ended, reason,
+          }))
+        })
+        return [...selected, ...additions]
+      })
       .slice(0, 100)
+    const seen = new Set(related.map(row => row.id))
+    for (const [peer, taskCount] of [...coSelected].sort(([a, x], [b, y]) => y - x || a.localeCompare(b))) {
+      if (related.length === 50) break
+      if (seen.has(peer)) continue
+      const row = this.store.assets.get(peer)
+      if (!row || row.archived === true || row.deletedAt !== undefined || row.deleted !== undefined || !this.access(row)) continue
+      if (typeof row.id !== 'string') continue
+      related.push({ id: row.id, name: row.name, revision: revision(row), kind: row.kind, taskCount, reason: '曾在 ' + taskCount + ' 个任务中共同选用；不代表已使用' })
+    }
     return { related, references }
   }
   get(id: string): Row { return this.view(this.require(id)) }

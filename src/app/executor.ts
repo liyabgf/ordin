@@ -33,7 +33,7 @@ import type { Settings } from '../core/policy.ts'
 import type { TicketEventType } from '../core/model.ts'
 import type { BackendKind, BackendSession, DriverHealth, LaunchSpec, RunningTurn, WorkerDriver, WorkerSpec } from '../drivers/types.ts'
 import { listFiles, readForPanel, resolveRealInside, type FileListing } from './files.ts'
-import { materializeSkills, skillsPrompt } from './materialize.ts'
+import { materializeSkills, resolveSkills, skillsPrompt } from './materialize.ts'
 import { runAcceptance } from './acceptance.ts'
 import type { SavedSkill } from './prompts.ts'
 import { Later, type Effects } from './effects.ts'
@@ -548,6 +548,10 @@ export class WorkerExecutor implements Executor {
     // nothing exists before launch, so there is nothing to clean up).
     if (this.currentLaunch(ticket.id, assignment.id) === undefined || this.host.closing() || this.host.lifetime.aborted) {
       throw new Later(PAUSED_RETRY_MS)
+    }
+    if (ticket.skillRefs?.length) {
+      try { resolveSkills(this.host.skills?.() ?? [], ticket.skillRefs) }
+      catch (error) { throw new PrepareFailed('Selected skill refused before launch: ' + reason(error)) }
     }
     const includedInputs = undelivered(ticket).map(input => input.id)
     const token = randomUUID()

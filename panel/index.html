@@ -869,7 +869,9 @@
           <h2 style="margin:0">已掌握的手艺（Skills）</h2>
           <span class="chip muted" id="skills-count-chip" style="font-size:11px"></span>
         </summary>
-        <p class="muted" style="font-size:12px;margin:6px 0 10px">智能体在实战任务中沉淀并验证通过的通用本事。新任务启动时会自动装配启用中的手艺，无需手动配置路径。</p>
+        <p class="muted" style="font-size:12px;margin:6px 0 10px">启用表示可选用。任务只会收到已选技能的固定版本文件；文件已投射不代表执行端已读取或调用。</p>
+        <p id="skill-projection-evidence" class="muted" style="font-size:12px">DSH 服务：任务内固定版本文件读取已实测。Codex、Claude Code：仅离线投射通过，真实读取未验证。各端技能调用及原生注册未验证。</p>
+        <p id="tool-registration-status" class="muted" style="font-size:12px">任务级 Tool 注册：DSH、Codex、Claude Code 均不支持。</p>
         <div id="skills-list" class="stack"></div>
       </details>
     </section>

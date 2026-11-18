@@ -1,5 +1,5 @@
 /** Attach to DSH's existing task service. Model configuration stays entirely in DSH. */
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { isAbsolute } from 'node:path'
 import { TurnChannel } from './channel.ts'
 import { parseWorkerReport } from './report.ts'
@@ -95,15 +95,16 @@ export class DshServiceDriver implements WorkerDriver {
         const created=resume?{sessionId:this.sessionId(resume,spec)}:await this.rpc('create',{cwd:spec.cwd})
         if(typeof created?.sessionId!=='string'||!created.sessionId)throw Error('DSH returned no Session ID')
         rawId=created.sessionId;session={backend:'dsh',id:this.prefix+rawId,cwd:spec.cwd,savedAt:now()}
-        // Persist identity before sending; an uncertain delivery must not be silently re-created.
-        channel.push({kind:'started',at:now(),session})
         const before=this.state(await this.rpc('state',{sessionId:rawId}))
         if(before.running||before.queue?.length||before.pendingInput.length)throw Error('DSH Session is busy; prompt not sent')
         resolveReady()
         if(stopping){await cancelPromise;throw Error('Cancelled before prompt admission; no task prompt sent')}
-        const requestId='ordin-'+createHash('sha256').update(spec.ticketId+':'+spec.assignmentId).digest('hex')
+        // The same assignment can span multiple turns in one session. Never replay an uncertain request.
+        const requestId='ordin-'+randomUUID()
         const ack=await this.rpc('prompt',{sessionId:rawId,requestId,mode:'queue',content:[{type:'text',text:spec.prompt}]})
         if(ack?.accepted!==true)throw Error('DSH did not accept task input')
+        // Ordin records included inputs as delivered on started, not on session allocation.
+        channel.push({kind:'started',at:now(),session})
         for(;;){
           if(Date.now()>=deadline){await cancel();result=failedResult('timeout','DSH task deadline reached; cancellation confirmed',false,session);break}
           const waitMs=Math.max(1,Math.min(1000,deadline-Date.now()))

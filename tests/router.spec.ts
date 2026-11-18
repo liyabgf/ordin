@@ -17,6 +17,14 @@ function fixture() {
   return { router, calls, select: (backend: BackendKind) => { selected = backend } }
 }
 describe('backend routing', () => {
+  it.each(['dsh', 'codex', 'claude'] as const)('rejects unimplemented tool registration on %s before driver preparation', async backend => {
+    const {router, calls} = fixture()
+    const requested = {...spec, backend, mcpReport: {}}
+    const session: BackendSession = {backend, id:'prior', cwd:spec.cwd, savedAt:''}
+    await expect(router.prepare(requested)).rejects.toThrow('Tool registration is not supported')
+    await expect(router.prepare(requested, session)).rejects.toThrow('Tool registration is not supported')
+    expect(calls).toEqual([])
+  })
   it('reads changed settings for new work without restarting the server', async () => {
     const { router, calls, select } = fixture()
     await router.launch(await router.prepare(spec))
