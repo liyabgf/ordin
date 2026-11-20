@@ -1,6 +1,7 @@
 /** The two Sources that produce Triggers on this machine: a directory of request files, and the operator's schedules. */
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { readdir, readFile } from 'node:fs/promises'
 import { describe, expect, it, vi } from 'vitest'
 import { HealthBoard } from '../src/app/health.ts'
 import type { Effects } from '../src/app/effects.ts'
@@ -1074,25 +1075,66 @@ describe('an inbox directory anybody can write to', () => {
 describe('the inbox board and the state it does not handle', () => {
   const directory = () => tempDir('ordin-inbox-')
 
-  // The erasure defect, which is the one that could happen today: `record(detail)` overwrites the entry wholesale
-  // (`health.ts:17`), so a `problem()` raised mid-pass was gone before the pass ended. Collecting the pass's issues
-  // and deciding once, at the end, is what makes a complaint the operator can actually see. This is the S19/N5 shape
-  // that chat's spec says cron and rule each shipped once.
-  it('keeps a complaint raised mid-pass, instead of overwriting it with the end-of-pass summary', async () => {
+  it('marks a directory read failure as unhealthy and leaves the inbox status diagnosable', async () => {
+    const inbox = directory()
+    const { host } = harness()
+    let unreadable = inbox
+    const source = new InboxSource(host, inbox, {
+      readdir: async path => {
+        if (path === unreadable) throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
+        return readdir(path, { withFileTypes: true })
+      },
+      readFile: path => readFile(path, 'utf8'),
+    })
+    try {
+      await source.poll()
+      expect(source.status()).toMatchObject({ ok: false, detail: 'Could not read inbox directory: permission denied' })
+      expect(host.health.problems().map(problem => problem.detail)).toContain(source.status().detail)
+      unreadable = join(inbox, 'unhandled')
+      await source.poll()
+      expect(source.status()).toMatchObject({ ok: false, detail: 'Could not read unhandled/: permission denied' })
+      unreadable = ''
+      await source.poll()
+      expect(source.status().ok).toBe(true)
+      expect(host.health.problems()).toEqual([])
+    } finally { await source.stop() }
+  })
+
+  it('leaves an unread request in place and reports settling files in the same pass', async () => {
     const inbox = directory()
     const { host } = harness()
     drop(inbox, 'stuck.md', '---\ntitle: Unreadable\n---\nBody.')
-    chmodSync(join(inbox, 'stuck.md'), 0o000)
-    const source = new InboxSource(host, inbox)
-    source.start()
+    writeFileSync(join(inbox, 'new.md'), 'Still being written')
+    const source = new InboxSource(host, inbox, {
+      readdir: path => readdir(path, { withFileTypes: true }),
+      readFile: async path => {
+        if (path.endsWith('/stuck.md')) throw new Error('permission denied')
+        return readFile(path, 'utf8')
+      },
+    })
     try {
       await source.poll()
-      const problems = host.health.problems()
-      expect(problems.map(problem => problem.detail).join('\n')).toContain('Could not read stuck.md')
-      // And the file was left where it is: a request that could not be read was not taken, so it must not be filed
-      // anywhere that claims it was.
-      expect(existsSync(join(inbox, 'accepted'))).toBe(false)  // 更强的断言：那个目录根本不该存在
-    } finally { chmodSync(join(inbox, 'stuck.md'), 0o644); source.stop() }
+      expect(source.status().ok).toBe(false)
+      expect(source.status().detail).toContain('Could not read stuck.md')
+      expect(source.status().detail).toContain('1 file(s) still settling')
+      expect(host.health.problems().map(problem => problem.detail).join('\n')).toContain('Could not read stuck.md')
+      expect(existsSync(join(inbox, 'stuck.md'))).toBe(true)
+      expect(existsSync(join(inbox, 'accepted'))).toBe(false)
+    } finally { await source.stop() }
+  })
+
+  it('treats a missing unhandled directory as normal and reports an existing backlog', async () => {
+    const inbox = directory()
+    const { host } = harness()
+    const source = new InboxSource(host, inbox)
+    await source.poll()
+    expect(source.status().ok).toBe(true)
+    mkdirSync(join(inbox, 'unhandled'))
+    writeFileSync(join(inbox, 'unhandled', 'parked.md'), 'parked')
+    await source.poll()
+    expect(source.status().ok).toBe(true)
+    expect(source.status().detail).toContain('1 request(s) are parked in unhandled/')
+    expect(host.health.problems().map(problem => problem.detail).join('\n')).toContain('1 request(s) are parked in unhandled/')
   })
 
   it('parks an unhandled disposition where the folder claims no verdict, and reports the backlog rather than the event', async () => {

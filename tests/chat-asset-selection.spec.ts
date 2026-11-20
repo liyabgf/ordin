@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { runInNewContext } from 'node:vm'
 import { describe, expect, it } from 'vitest'
 
@@ -35,7 +36,7 @@ function fixture(storage = new Map<string,string>(), omitAssets = false) {
   const parent = {postMessage() {}}
   const win: any = {parent, location:{search:'',origin:'http://ordin.test'}, addEventListener:(name:string, fn:Function) => {listeners[name] = fn}, history:{replaceState() {}}, confirm:()=>true}
   runInNewContext(html.split('<script>')[1]!.split('</script>')[0]!, {
-    document:{getElementById:(id:string)=>nodes[id], createElement:(tag:string)=>new Element(tag)}, window:win, URLSearchParams,
+    document:{getElementById:(id:string)=>nodes[id], createElement:(tag:string)=>new Element(tag)}, window:win, URLSearchParams, crypto:{randomUUID},
     localStorage:{getItem:(key:string)=>storage.get(key) ?? null, setItem:(key:string,value:string)=>storage.set(key,value), removeItem:(key:string)=>storage.delete(key)},
     fetch:async (url:string, init:any = {}) => {
       const path = url.replace('/ordin/api/',''), method = init.method || 'GET', body = init.body ? JSON.parse(init.body) : undefined
@@ -43,6 +44,7 @@ function fixture(storage = new Map<string,string>(), omitAssets = false) {
       if (path === 'model/config') return ok({models:[]})
       if (path === 'execution/status') return ok({health:{ok:true}})
       if (path.startsWith('conversations?')) return ok({conversations:['a','b'].map(id=>({id,title:id,revision:1}))})
+      if (path.startsWith('conversations/a/actions/')) return {ok:false,status:404,json:async()=>({error:'not found'})}
       if (/conversations\/[ab]\/messages/.test(path)) return ok({messages:[]})
       if (path.startsWith('assets?')) return fail ? {ok:false,status:503,json:async()=>({error:'catalog down'})} : ok({assets})
       if (path.startsWith('assets/')) { if (detailDeferred) return new Promise<any>(r=>{releaseDetail=r}); return ok(detail) }
@@ -89,8 +91,15 @@ describe('chat asset selection actual script in VM',()=>{
   it('submits exact pins to the existing message endpoint; network and tool failure preserve choices, success clears only submitted choices',async()=>{
     const f=fixture();await settle();await f.open();await f.choose();f.fail(true);await f.send()
     expect(f.nodes['asset-chips']!.children).toHaveLength(1)
-    expect(f.calls.find(c=>c.path==='conversations/a/message')!.body).toEqual({text:'use report',assetRefs:[pin(asset())]})
-    f.fail(false);f.response({toolOutcomes:[{name:'create_task',ok:false,error:'no executor'}]});await f.send();expect(f.nodes['asset-chips']!.children).toHaveLength(1)
+    const sent = () => f.calls.filter(c=>c.path==='conversations/a/message')
+    expect(sent()).toHaveLength(1)
+    const original = sent()[0]!
+    expect(original.body).toEqual({text:'use report',assetRefs:[pin(asset())],actionId:expect.any(String)})
+    expect(f.calls.at(-1)?.path).toBe('conversations/a/actions/'+original.body.actionId)
+    expect(f.nodes['resend-action']!.hidden).toBe(false)
+    f.fail(false);f.response({toolOutcomes:[{name:'create_task',ok:false,error:'no executor'}]})
+    await f.nodes['send-retry']!.event('click');expect(sent()).toEqual([original])
+    await f.nodes['resend-action']!.event('click');expect(sent()).toEqual([original, original]);expect(f.nodes['asset-chips']!.children).toHaveLength(1)
     f.response({reply:'chat only'});await f.send();expect(f.nodes['asset-chips']!.children).toHaveLength(1)
     f.response({reply:'ok',toolOutcomes:[{name:'create_task',ok:true,data:{ticketId:'task-late'}}]});f.defer();const pending=f.send();await settle();f.setAssets([asset('late',{name:'Added while sending'})]);await f.open();await f.choose();f.release();await pending
     expect(f.nodes['asset-chips']!.textContent).toContain('Added while sending');expect(f.nodes['asset-chips']!.textContent).not.toContain('友好报告')
@@ -116,6 +125,6 @@ describe('chat asset selection actual script in VM',()=>{
   })
   it('shows catalog failures and supports older fixtures with asset nodes missing',async()=>{
     const f=fixture();await settle();f.fail(true);await f.open();expect(f.nodes['asset-error']!.textContent).toContain('catalog down')
-    const old=fixture(undefined,true);await settle();await old.send();expect(old.calls.at(-1)!.body).toEqual({text:'use report'})
+    const old=fixture(undefined,true);await settle();await old.send();expect(old.calls.at(-1)!.body).toEqual({text:'use report',actionId:expect.any(String)})
   })
 })

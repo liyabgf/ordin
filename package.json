@@ -11,12 +11,12 @@
     "start": "node --experimental-transform-types src/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck && vitest run --maxWorkers=1 --no-file-parallelism"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
     "typescript": "^5.9.0",
-    "vitest": "^3.2.0"
+    "vitest": "5.1.1"
   },
   "dependencies": {
     "zod": "4.6.7"

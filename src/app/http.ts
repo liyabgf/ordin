@@ -15,7 +15,7 @@ import { AssetCatalog, AssetCatalogError } from './asset-catalog.ts'
  *
  * 管理请求必须同源：Host 头必须指向本机 loopback 的实际端口，且携带标记头；Origin（若带）必须是同源。
  */
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { lstat } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
@@ -42,6 +42,7 @@ import { Memories, MemoryError } from './memories.ts'
 import { Conversations, ConversationError } from './conversations.ts'
 import { UPLOAD_BODY_BYTES, UploadError, type Uploads } from './uploads.ts'
 import { startServer } from './server.ts'
+import { CHAT_ACTION_ID, ChatActionExists, type ChatAction } from './coordinator.ts'
 
 /** 面板与 API 的正典前缀。 */
 export const BASE_PATH = '/ordin'
@@ -183,12 +184,13 @@ export interface HttpHost {
   nudge(): Promise<void>
   executionStatus?(): unknown
   checkExecution?(): Promise<unknown>
-  modelConfig?(): Promise<{ configuredKey: boolean }>
+  modelConfig?(): Promise<{ configuredKey: boolean; modelCheck?: { state: 'unknown' | 'passed' | 'failed'; checkedAt?: string; model?: string } }>
   saveModelConfig?(value: unknown): Promise<{ configuredKey: boolean }>
   testModel?(value: unknown): Promise<{ ok: true; model: string }>
   listModels?(value: unknown): Promise<{ models: string[] }>
   /** One coordinator turn for the panel chat; absent means the API answers 501 rather than pretending. */
-  conversationTurn?(conversationId: string, text: string, model?: string, assetRefs?: readonly {id:string;revision:number;contentHash:string}[]): Promise<{ reply: string; sent: readonly string[]; toolOutcomes: readonly unknown[]; rounds: number }>
+  conversationTurn?(conversationId: string, text: string, model?: string, assetRefs?: readonly {id:string;revision:number;contentHash:string}[], actionId?: string): Promise<{ reply: string; sent: readonly string[]; toolOutcomes: readonly unknown[]; rounds: number }>
+  chatAction?(conversationId: string, actionId: string): ChatAction | undefined
   conversationMessages?(conversationId: string, limit?: number): readonly Record<string, unknown>[]
   conversations?: Conversations
   /** 一张 Ticket 的 worker 此刻在做什么。@throws UserError('ticket_missing') */
@@ -223,7 +225,7 @@ export interface Serving {
 
 /** A refusal this route table words itself, with the field-level detail a form can point at. */
 class RouteError extends Error {
-  constructor(readonly status: 400 | 403 | 404 | 501 | 503, message: string, readonly issues?: readonly { path: string; message: string }[]) {
+  constructor(readonly status: 400 | 403 | 404 | 409 | 501 | 503, message: string, readonly issues?: readonly { path: string; message: string }[]) {
     super(message)
   }
 }
@@ -712,7 +714,7 @@ function table(host: HttpHost): readonly Route[] {
       const last = host.sourceStatus().cron?.lastTriggerAt
       return {
         zone: localZone(), now: new Date(now).toISOString(), lastTriggerAt: last,
-        schedules: host.settings().sources.cron.schedules.map(schedule => scheduleView(schedule, now)),
+        schedules: host.settings().sources.cron.schedules.map(schedule => scheduleView(schedule, now, localZone(), host.settings().watchdog.maxRuntimeMs)),
       }
     }),
     // What a schedule a person is editing would actually do: validated, and with its next few runs named.
@@ -732,7 +734,7 @@ function table(host: HttpHost): readonly Route[] {
         at = next
       }
       return {
-        schedule: scheduleView(parsed.data, now), next: runs, zone: localZone(),
+        schedule: scheduleView(parsed.data, now, localZone(), host.settings().watchdog.maxRuntimeMs), next: runs, zone: localZone(),
         describe: describeTiming(parsed.data.timing),
         ...(runs.length === 0 ? { warning: 'This timing never matches: no run could be computed.' } : {}),
       }
@@ -802,21 +804,31 @@ function table(host: HttpHost): readonly Route[] {
       const limit = number(query, 'limit', 100, 500)
       return { messages: host.conversationMessages(params.id!, limit) }
     }),
+    route('GET', 'conversations/:id/actions/:actionId', ({ params }) => {
+      if (!host.chatAction) throw new RouteError(501, 'Chat action receipts are not wired')
+      const receipt = host.chatAction(params.id!, params.actionId!)
+      if (!receipt) throw new RouteError(404, 'Chat action receipt was not found')
+      return { receipt }
+    }),
     route('POST', 'conversations/:id/message', async ({ params, body }) => {
       if (host.conversationTurn === undefined) throw new RouteError(501, 'The conversation coordinator is not wired')
       const payload = await body()
       const text = typeof payload === 'object' && payload !== null ? (payload as Record<string, unknown>).text : undefined
       if (typeof text !== 'string' || text.trim() === '') throw new RouteError(400, 'A non-empty text is required')
       const model = (payload as Record<string, unknown>).model
+      const suppliedActionId = (payload as Record<string, unknown>).actionId
+      const actionId = suppliedActionId === undefined ? randomUUID() : suppliedActionId
+      if (typeof actionId !== 'string' || !CHAT_ACTION_ID.test(actionId)) throw new RouteError(400, 'A valid actionId is required')
       const rawRefs = (payload as Record<string, unknown>).assetRefs
       if (rawRefs !== undefined && (!Array.isArray(rawRefs) || rawRefs.length > 32 || rawRefs.some(ref => ref === null || typeof ref !== 'object' || Array.isArray(ref) || Object.keys(ref as Record<string,unknown>).some(key => !['id','revision','contentHash'].includes(key)) || typeof (ref as Record<string,unknown>).id !== 'string' || !Number.isSafeInteger((ref as Record<string,unknown>).revision) || Number((ref as Record<string,unknown>).revision) < 1 || typeof (ref as Record<string,unknown>).contentHash !== 'string' || !/^[a-f0-9]{64}$/.test(String((ref as Record<string,unknown>).contentHash))))) throw new RouteError(400, 'assetRefs must contain up to 32 pinned asset references')
       const assetRefs = (rawRefs ?? []) as {id:string;revision:number;contentHash:string}[]
       if (model !== undefined && (typeof model !== 'string' || model.trim() === '' || model.length > 200)) throw new RouteError(400, 'model must be a non-empty saved model name of at most 200 characters')
       try {
         if (host.conversations !== undefined || host.store !== undefined) (host.conversations ?? new Conversations(host.store)).assertWritable(params.id!, true)
-        return await host.conversationTurn(params.id!, text, model as string | undefined, assetRefs)
+        return await host.conversationTurn(params.id!, text, model as string | undefined, assetRefs, actionId)
       } catch (error) {
         if (error instanceof ConversationError) throw error
+        if (error instanceof ChatActionExists) throw new RouteError(409, error.message)
         throw new RouteError(error instanceof RangeError ? 400 : 503, error instanceof Error ? error.message : String(error))
       }
     }),

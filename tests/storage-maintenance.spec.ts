@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
+import { AssetCatalog } from '../src/app/asset-catalog.ts'
+import { AssetObjects } from '../src/app/asset-objects.ts'
 import { Store, SCHEMA_VERSION } from '../src/app/store.ts'
 import { takeLock } from '../src/app/lock.ts'
 const roots: string[] = []
@@ -16,6 +18,20 @@ function fixture(dir: string, value: string, version = SCHEMA_VERSION): string {
 }
 function value(p: string): unknown { const db = new DatabaseSync(p, { readOnly: true }); try { return db.prepare("SELECT value FROM kv WHERE key='retained'").get()?.value } finally { db.close() } }
 describe('storage maintenance CLI', () => {
+  it('runs storage maintenance through a symlink to the entry file or checkout', () => {
+    const dir = fresh(), sandbox = fresh()
+    fixture(dir, 'linked')
+    const fileLink = join(sandbox, 'entry.ts'), directoryLink = join(sandbox, 'checkout')
+    symlinkSync(resolve('src/index.ts'), fileLink)
+    symlinkSync(process.cwd(), directoryLink)
+    for (const [index, entry] of [fileLink, join(directoryLink, 'src/index.ts')].entries()) {
+      const output = join(sandbox, 'backup-' + index + '.sqlite3')
+      const result = spawnSync(process.execPath, ['--experimental-transform-types', entry, 'storage', 'backup', '--state-dir', dir, '--output', output], { encoding: 'utf8', timeout: 10000 })
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stdout).toContain('Storage backup created:')
+      expect(value(output)).toBe(JSON.stringify('linked'))
+    }
+  })
   it('accepts versions 1 through 9, including v8 inputs without ownership columns', () => {
     for (let version = 1; version <= SCHEMA_VERSION; version++) {
       const dir = fresh()
@@ -96,5 +112,121 @@ describe('storage maintenance CLI', () => {
     symlinkSync(target, out)
     for (const args of [['backup', '--state-dir', dir, '--output', out], ['restore', '--state-dir', dir, '--input', target], ['backup', '--state-dir', dir + '/../' + dir.split('/').at(-1), '--output', out], ['backup', '--state-dir', join(dir, 'missing'), '--output', out]]) expect(cli(...args).status).not.toBe(0)
     expect(readFileSync(target)).toEqual(before)
+  })
+})
+
+describe('instance recovery staging', () => {
+  it.each(['missing', 'partial'])('refuses an effects table with a %s unique constraint', kind => {
+    const dir = fresh(); const target = fixture(dir, 'safe'); const before = readFileSync(target)
+    const input = fixture(fresh(), 'bad')
+    const db = new DatabaseSync(input)
+    db.exec('DROP TABLE effects; CREATE TABLE effects (kind TEXT NOT NULL, key TEXT NOT NULL, payload TEXT NOT NULL, dueAt INTEGER NOT NULL, failures INTEGER NOT NULL, running INTEGER NOT NULL, generation TEXT NOT NULL, claimToken TEXT);')
+    if (kind === 'partial') db.exec('CREATE UNIQUE INDEX broken ON effects(kind, key) WHERE running=0')
+    db.close()
+    const result = cli('restore', '--state-dir', dir, '--input', input)
+    expect(result.status, result.stderr).toBe(1)
+    expect(result.stderr).toContain('effects(kind,key)')
+    expect(readFileSync(target)).toEqual(before)
+    expect(readdirSync(dir)).toEqual(['ordin.sqlite3'])
+  })
+  it('verifies multiple current and pinned historical objects before using a staged restore', async () => {
+    const live = fresh(); const previous = fixture(live, 'previous'); const liveBytes = readFileSync(previous)
+    const source = fresh(); const path = fixture(source, 'new')
+    const backup = join(fresh(), 'backup.sqlite3'); const target = fresh()
+    const store = new Store(path); const objects = new AssetObjects(source)
+    const refs = []
+    try {
+      for (const id of ['first', 'second']) {
+        const data = []
+        for (const revision of [1, 2]) {
+          const bytes = Buffer.from(id + ':' + revision)
+          const object = await objects.put(bytes)
+          data.push({ id, revision, contentHash: object.objectKey, bytes, storageVersion: 1, storage: { kind: 'managed-object', ...object } })
+        }
+        refs.push(...data)
+        const [historical, current] = data.map(({ bytes: _bytes, ...record }) => record)
+        store.assets.save({ ...current, id, revisions: [historical], ownerProfileId: 'default', name: id, kind: 'document', status: 'active', createdAt: '2026-11-19', updatedAt: '2026-11-19' } as Parameters<Store['assets']['save']>[0])
+      }
+    } finally { store.close() }
+    const backedUp = cli('backup', '--state-dir', source, '--output', backup)
+    expect(backedUp.status, backedUp.stderr).toBe(0)
+    const restored = cli('restore', '--state-dir', target, '--input', backup)
+    expect(restored.status, restored.stderr).toBe(0)
+    const targetDb = join(target, 'ordin.sqlite3')
+    const targetBytes = readFileSync(targetDb)
+    const verify = () => cli('verify', '--state-dir', target)
+    const verified = verify()
+    expect(verified.status, verified.stderr).toBe(0)
+    expect(verified.stdout).toContain('4 managed asset objects')
+    const locked = takeLock(target)
+    try {
+      const busy = verify()
+      expect(busy.status, busy.stderr).toBe(1)
+      expect(busy.stderr).toContain('lock exists')
+    } finally { locked.release() }
+    const historical = refs[0]!
+    const historicalPath = join(target, 'asset-objects', historical.contentHash)
+    writeFileSync(historicalPath, 'tampered')
+    const corrupt = verify()
+    expect(corrupt.status, corrupt.stderr).toBe(1)
+    expect(corrupt.stderr).toContain('Managed asset object verification failed')
+    expect(readFileSync(historicalPath, 'utf8')).toBe('tampered')
+    expect(readFileSync(targetDb)).toEqual(targetBytes)
+    expect(readFileSync(previous)).toEqual(liveBytes)
+    expect(readdirSync(target).sort()).toEqual(['asset-objects', 'ordin.sqlite3'])
+    writeFileSync(historicalPath, historical.bytes)
+    const valid = verify()
+    expect(valid.status, valid.stderr).toBe(0)
+    expect(valid.stdout).toContain('4 managed asset objects')
+    const recovered = new Store(targetDb)
+    try {
+      const catalog = new AssetCatalog(recovered, target)
+      for (const { id, revision, contentHash, bytes } of refs) {
+        await expect(catalog.resolveBytes({ id, revision, contentHash })).resolves.toMatchObject({ ref: { id, revision, contentHash }, bytes })
+      }
+    } finally { recovered.close() }
+    const replacement = cli('restore', '--state-dir', target, '--input', previous)
+    expect(replacement.status, replacement.stderr).toBe(0)
+    const rollback = join(target, readdirSync(target).find(name => name.endsWith('.sqlite3') && name.includes('.rollback-'))!)
+    const rollbackTarget = fresh()
+    const undo = cli('restore', '--state-dir', rollbackTarget, '--input', rollback)
+    expect(undo.status, undo.stderr).toBe(0)
+    const reopened = new Store(join(rollbackTarget, 'ordin.sqlite3'))
+    try {
+      const catalog = new AssetCatalog(reopened, rollbackTarget)
+      for (const { id, revision, contentHash, bytes } of refs) {
+        await expect(catalog.resolveBytes({ id, revision, contentHash })).resolves.toMatchObject({ ref: { id, revision, contentHash }, bytes })
+      }
+    } finally { reopened.close() }
+  })
+  it('rejects missing or corrupt backup objects and cleans failed backups', async () => {
+    const source = fresh(); const path = fixture(source, 'source'); const objects = new AssetObjects(source)
+    const bytes = Buffer.from('only object'); const object = await objects.put(bytes)
+    const store = new Store(path)
+    try { store.assets.save({ id: 'asset-1', kind: 'document', name: 'one', description: '', source: { type: 'operator-import', actor: 'operator' }, createdAt: '2026-11-19', updatedAt: '2026-11-19', contentHash: object.objectKey, revision: 1, status: 'active', archived: false, storageVersion: 1, storage: { kind: 'managed-object', ...object }, ownerProfileId: 'default' } as Parameters<Store['assets']['save']>[0]) } finally { store.close() }
+    const backup = join(fresh(), 'backup.sqlite3'); expect(cli('backup', '--state-dir', source, '--output', backup).status).toBe(0)
+    const sidecar = backup + '.assets'
+    const objectPath = join(sidecar, object.objectKey)
+    const target = fresh(); const targetDb = fixture(target, 'safe'); const before = readFileSync(targetDb)
+    const targetObject = await new AssetObjects(target).put(Buffer.from('keep this'))
+    const keepPath = join(target, 'asset-objects', targetObject.objectKey)
+    writeFileSync(objectPath, 'tampered')
+    for (const diagnostic of ['verification failed', 'missing']) {
+      const result = cli('restore', '--state-dir', target, '--input', backup)
+      expect(result.status, result.stderr).toBe(1)
+      expect(result.stderr).toContain(diagnostic)
+      expect(readFileSync(targetDb)).toEqual(before)
+      expect(readFileSync(keepPath, 'utf8')).toBe('keep this')
+      expect(readdirSync(join(target, 'asset-objects'))).toEqual([targetObject.objectKey])
+      expect(readdirSync(target).sort()).toEqual(['asset-objects', 'ordin.sqlite3'])
+      rmSync(objectPath, { force: true })
+    }
+    rmSync(join(source, 'asset-objects', object.objectKey))
+    const failedOutput = join(fresh(), 'failed.sqlite3')
+    const failed = cli('backup', '--state-dir', source, '--output', failedOutput)
+    expect(failed.status, failed.stderr).toBe(1)
+    expect(failed.stderr).toContain('missing')
+    expect(readdirSync(resolve(failedOutput, '..'))).toEqual([])
+    expect(readdirSync(source).sort()).toEqual(['asset-objects', 'ordin.sqlite3'])
   })
 })

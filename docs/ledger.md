@@ -1,5 +1,12 @@
 # Ordin Publication Ledger
 
+## Manager capability and remediation release（2026-11-20）
+
+- Scope: selective sync from source `28544de`. Include runtime code, panel pages, tests, bridge delivery receipts, verifier scripts, contracts and user-facing documentation.
+- Exclude: source `docs/incidents.md`, `docs/ledger.md`, `docs/engineering-status.md`, internal acceptance reports, audit/remediation records, temporary paths, ticket ids, process ids, credentials and runtime data. This repository keeps its own ledger and incident register.
+- Redaction: `scripts/probe/dsh.mjs` hard-coded a personal working directory; replaced with a path derived from the script location.
+- Verification: staged from this repository’s HEAD in `/tmp/ordin-pub-75Cdsr`; `npm run typecheck` exit 0; `npm test -- --no-file-parallelism` exit 0 with 83 files / 1338 tests; scan of staged tree and pending diff for personal paths, keys and operational ids returned none; `git diff --check` clean.
+
 ## 双语 README 更新（2026-11-18）
 
 - 修正上游归属和启动地址，补齐当前功能、限制和英文说明。范围为中英文 README、账本；源仓另记录已确认的发布文档错误。验证链接和隔离回归后推送发布仓。

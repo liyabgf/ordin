@@ -1,3 +1,4 @@
+import { bindToolPath } from './tool-registry.ts'
 /**
  * The tools this system registers on its two kinds of Session.
  *
@@ -174,7 +175,7 @@ function trackedTools(host: ToolsHost, definitions: Tool[]): Tool[] {
 /** The worker's one tool: classify its own work, which is how it speaks to the system. */
 export function workerTools(host: ToolsHost, ticket: Ticket): Tool[] {
   const ticketId = ticket.id
-  return trackedTools(host, [tool({
+  return bindToolPath('worker', trackedTools(host, [tool({
     name: 'ordin_report',
     description: 'Report the state of this Ticket\'s work. Call it before your turn ends. `state` classifies the work: '
       + 'progress (working, for the record), waiting (turn ended with work you cannot do now), ready (done; this ends the Ticket), '
@@ -323,14 +324,14 @@ export function workerTools(host: ToolsHost, ticket: Ticket): Tool[] {
         return { ticket_id: args.ticket_id, input_id: input.id, delivered: input.deliveredAt !== undefined }
       } catch (error) { return refusal(error) }
     },
-  })])
+  })]))
 }
 
 // ------------------------------------------------------------ Main Session
 
 /** The management tools of the operator's front desk. */
 export function mainTools(host: ToolsHost): Tool[] {
-  return trackedTools(host, [
+  return bindToolPath('desk', trackedTools(host, [
     tool({
       name: 'ordin_create_ticket',
       description: 'Open a Ticket for work that needs its own directory and time: a worker Session runs it unattended and reports back. '
@@ -562,7 +563,7 @@ export function mainTools(host: ToolsHost): Tool[] {
         } catch (error) { return refusal(error) }
       },
     }),
-  ])
+  ]))
 }
 
 function latestAssignmentState(ticket: Ticket): string {

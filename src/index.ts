@@ -98,7 +98,7 @@ export async function main(): Promise<number> {
   return 0
 }
 
-if (process.argv[1] !== undefined && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+if (import.meta.main) {
   main().then(
     code => { if (code !== 0) process.exitCode = code },
     error => { console.error(error); process.exitCode = 1 },

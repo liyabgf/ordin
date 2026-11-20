@@ -165,14 +165,16 @@ const sendPassive = async (carried, text) => {
   // caller can try the active door, not as success that archives the message as delivered.
   const windowClosed = result.body.code === 304023 || result.body.code === 304024
   if (result.ok && !windowClosed) return { seq }
-  return { refused: `passive refused (HTTP ${result.status} code ${result.body.code ?? '?'})` }
+  if (windowClosed || Number.isInteger(result.body.code)) return { refused: `passive refused (HTTP ${result.status} code ${result.body.code ?? '?'})` }
+  throw new Error(`passive delivery result unknown (HTTP ${result.status})`)
 }
 
 const sendActive = async (carried, text) => {
   const { path, body } = activeReply(carried, text)
   const result = await post(path, body)
   if (result.ok) return { ok: true }
-  return { refused: `active refused (HTTP ${result.status} code ${result.body.code ?? '?'}) — quota or permission` }
+  if (Number.isInteger(result.body.code)) return { refused: `active refused (HTTP ${result.status} code ${result.body.code ?? '?'}) — quota or permission` }
+  throw new Error(`active delivery result unknown (HTTP ${result.status})`)
 }
 
 const outbound = async ({ thread, text, name }) => {
@@ -201,10 +203,6 @@ const outbound = async ({ thread, text, name }) => {
   throw new Error(`${passive.refused}; ${active.refused} — the reply stays queued in out/ (面板「待取回信」)，新消息会重新打开被动门`)
 }
 
-const sendOutboundFile = async ({ thread, filePath }) => {
-  throw new Error(`file delivery is not implemented for QQ yet (${filePath}) — replies still arrive as text`)
-}
-
 const recordSentReceipt = async () => {
   // Receipt ledger arrives with the first live traffic, as for the other two new bridges: no invented shapes.
 }
@@ -217,7 +215,7 @@ const startOutboundLoop = () => {
     inFlight = true
     try {
       await touchHeartbeat()
-      await drainOut({ directory, send: outbound, sendFile: sendOutboundFile, onSent: recordSentReceipt, log, keepDays, limit: MESSAGE_LIMIT })
+      await drainOut({ directory, send: outbound, onSent: recordSentReceipt, log, keepDays, limit: MESSAGE_LIMIT })
     } catch (error) {
       log.error('outbound-failed', { error: String(error?.message ?? error) })
     } finally {

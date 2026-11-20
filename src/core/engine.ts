@@ -797,6 +797,15 @@ export class Engine {
     return this.addInput(ticketId, { kind: 'note', text, ...(attachments?.length ? { attachments } : {}) })
   }
 
+  /** Timing notices are operator facts, not undelivered Worker instructions. */
+  budgetWarning(ticketId: string, kind: 'estimate' | 'limit', budgetMs: number, text: string): Ticket {
+    return this.mutate(ticketId, ticket => {
+      if (!liveTicket(ticket) || ticket.recovery !== undefined) return ticket
+      this.record(ticketId, 'budget_warning', { kind: 'system', id: 'runtime-budget' }, { kind, budgetMs, text })
+      return { ...ticket, notes: [...ticket.notes, { at: this.now(), text }] }
+    })
+  }
+
   /** Persist an idempotent note with fixed asset versions; catalog authorization belongs to the application. */
   assetNote(ticketId: string, requestId: string, refs: readonly AssetRef[], text: string): Ticket {
     return this.tx.atomic(() => {

@@ -241,8 +241,14 @@ describe('scheduleView', () => {
   it('says the wall-clock budget in words, and says plainly when there is none', () => {
     // 面板照抄这句话，所以这个视图是它唯一的所有者：这里不钉住，删掉它就没人发现。
     expect(scheduleView({ ...daily, maxRuntimeMs: 60 * 60_000 }, from).budgetText)
-      .toBe('墙钟预算 60 分钟（到点先提醒收尾，再过 10 分钟仍未结束就停下并交给人）')
-    expect(scheduleView(daily, from).budgetText).toBe('无墙钟预算（跑多久都行）')
+      .toBe('墙钟上限 60 分钟（到点通知操作者，再过 10 分钟仍无终局就停下；包括验收用时）')
+    expect(scheduleView(daily, from).budgetText).toBe('未设置墙钟上限（模型估时只提醒，不会自动停下）')
+    expect(scheduleView(daily, from, 'UTC', 30 * 60_000)).toMatchObject({
+      maxRuntimeMs: 0, effectiveBudgetMs: 30 * 60_000, budgetSource: 'global',
+      budgetText: '继承全局设置：墙钟上限 30 分钟（到点通知操作者，再过 10 分钟仍无终局就停下；包括验收用时）',
+    })
+    expect(scheduleView({ ...daily, maxRuntimeMs: 60 * 60_000 }, from, 'UTC', 30 * 60_000))
+      .toMatchObject({ maxRuntimeMs: 60 * 60_000, effectiveBudgetMs: 60 * 60_000, budgetSource: 'schedule' })
   })
 
   it('says which surface the worker gets, because "told not to run things" and "cannot run things" differ', () => {

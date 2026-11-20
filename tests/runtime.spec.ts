@@ -29,6 +29,7 @@ async function waitFor<T>(read: () => T | undefined, ms: number): Promise<T> {
 class InstantDriver implements WorkerDriver {
   readonly backend = 'dsh' as const
   readonly launched: LaunchSpec[] = []
+  constructor(private readonly releaseReport?: Promise<void>) {}
   async probe(): Promise<DriverHealth> {
     return { backend: 'dsh', ok: true, checkedAt: new Date().toISOString(), version: 'fake-1', auth: 'ok', problems: [] }
   }
@@ -39,32 +40,37 @@ class InstantDriver implements WorkerDriver {
     this.launched.push(spec)
     const channel = new TurnChannel()
     const session: BackendSession = { backend: 'dsh', id: `fake-session-${spec.ticketId}`, cwd: spec.cwd, savedAt: new Date().toISOString() }
-    setTimeout(() => {
+    const done = (async () => {
+      await new Promise(resolve => setTimeout(resolve, 0))
       channel.push({ kind: 'started', at: new Date().toISOString(), session, pid: 123 })
+      await this.releaseReport
       // The fake worker produces its claimed artifact, so M1-F has something real to register.
       try { mkdirSync(spec.cwd, { recursive: true }); writeFileSync(joinPath(spec.cwd, 'result.md'), '# 完成\n', 'utf8') } catch {}
       channel.push({ kind: 'report', at: new Date().toISOString(), report: { state: 'ready', summary: '任务完成', at: new Date().toISOString(), files: ['result.md'] } })
-      channel.push({ kind: 'final', at: new Date().toISOString(), result: { status: 'completed', text: '完成', session } })
+      const result = { status: 'completed' as const, text: '完成', session }
+      channel.push({ kind: 'final', at: new Date().toISOString(), result })
       channel.close()
-    }, 0)
+      return result
+    })()
     return {
       id: `fake-turn-${spec.assignmentId}`, backend: 'dsh', events: channel.iterable,
-      done: Promise.resolve({ status: 'completed', text: '完成', session }),
-      feed: async () => ({ status: 'accepted' }),
+      done,
+      feed: async () => this.releaseReport === undefined
+        ? { status: 'accepted' }
+        : { status: 'queued-for-next-turn', reason: 'This backend cannot accept an input mid-turn' },
       cancel: async () => {},
     }
   }
 }
 
-function context(name: string) {
+function context(name: string, driver = new InstantDriver(), acceptanceEnabled = false) {
   const stateDir = tempDir(`ordin-runtime-${name}-`)
   const workRoot = join(stateDir, 'work')
   const inboxDir = join(stateDir, 'inbox')
   const config = resolveConfig({ stateDir, workRoot, inboxDir, port: 0 })
   const infrastructure = boot({ config, logger: silentLogger() })
   const proc = new ProcessRegistry()
-  const driver = new InstantDriver()
-  const runtime = createRuntime(infrastructure, { logger: silentLogger(), driver, proc, notifier: null, acceptanceEnabled: false })
+  const runtime = createRuntime(infrastructure, { logger: silentLogger(), driver, proc, notifier: null, acceptanceEnabled })
   return { runtime, driver, inboxDir, stateDir }
 }
 
@@ -169,20 +175,22 @@ describe('F3-D1 task wall-clock budgets', () => {
   }
 
   it.each([
-    ['explicit Ticket over source/global', 60_000, 300_000, 600_000, 60_000],
     ['source when Ticket is absent', undefined, 300_000, 600_000, 300_000],
     ['global fallback', undefined, undefined, 600_000, 600_000],
-    ['explicit Ticket may exceed source/global', 900_000, 300_000, 600_000, 900_000],
-  ] as const)('uses %s, nudges once at the soft budget, then stops after ten minutes', async (_name, ticketBudget, sourceBudget, globalBudget, budget) => {
+    ['source above a lower model estimate', 60_000, 300_000, 600_000, 300_000],
+    ['source below a higher model estimate', 900_000, 300_000, 600_000, 300_000],
+  ] as const)('uses %s, notifies once at the configured limit, then stops after ten minutes', async (_name, ticketBudget, sourceBudget, globalBudget, budget) => {
     const { runtime, driver, id } = runningBudget(ticketBudget, sourceBudget, globalBudget)
     try {
       runtime.enforceRuntimeBudgets(start + budget - 1)
-      expect(runtime.store.tickets.get(id)!.inputs.filter(input => input.kind === 'note')).toHaveLength(0)
+      const warnings = () => runtime.engine.history(id).filter(event => event.type === 'budget_warning' && event.detail?.kind === 'limit')
+      expect(warnings()).toHaveLength(0)
       runtime.enforceRuntimeBudgets(start + budget)
-      expect(runtime.store.tickets.get(id)!.inputs.filter(input => input.kind === 'note')).toHaveLength(1)
+      expect(warnings()).toHaveLength(1)
       expect(runtime.store.tickets.get(id)!.ended).toBeUndefined()
       runtime.enforceRuntimeBudgets(start + budget + grace - 1)
-      expect(runtime.store.tickets.get(id)!.inputs.filter(input => input.kind === 'note')).toHaveLength(1)
+      expect(warnings()).toHaveLength(1)
+      expect(runtime.store.tickets.get(id)!.inputs).toEqual([])
       expect(runtime.store.tickets.get(id)!.ended).toBeUndefined()
       runtime.enforceRuntimeBudgets(start + budget + grace)
       expect(runtime.store.tickets.get(id)!.ended).toMatchObject({ outcome: 'stopped', by: 'system' })
@@ -191,7 +199,7 @@ describe('F3-D1 task wall-clock budgets', () => {
   })
 
   it.each(['wait', 'overlap'] as const)('keeps elapsed time from the earliest persisted start across retries (%s)', async mode => {
-    const { runtime, id } = runningBudget(60_000, 300_000)
+    const { runtime, id } = runningBudget(undefined, 60_000)
     try {
       const ticket = runtime.store.tickets.get(id)!
       const first = ticket.assignments[0]!
@@ -200,9 +208,10 @@ describe('F3-D1 task wall-clock budgets', () => {
         { id: 'retry', state: 'running', createdAt: iso(45_000), startedAt: iso(45_000) },
       ] })
       runtime.enforceRuntimeBudgets(start + 59_999)
-      expect(runtime.store.tickets.get(id)!.inputs.filter(input => input.kind === 'note')).toHaveLength(0)
+      const warnings = () => runtime.engine.history(id).filter(event => event.type === 'budget_warning')
+      expect(warnings()).toHaveLength(0)
       runtime.enforceRuntimeBudgets(start + 60_000)
-      expect(runtime.store.tickets.get(id)!.inputs.filter(input => input.kind === 'note')).toHaveLength(1)
+      expect(warnings()).toHaveLength(1)
       runtime.enforceRuntimeBudgets(start + 60_000 + grace)
       expect(runtime.store.tickets.get(id)!.ended?.outcome).toBe('stopped')
     } finally { await runtime.stop() }
@@ -228,6 +237,42 @@ describe('F3-D1 task wall-clock budgets', () => {
       runtime.enforceRuntimeBudgets(start + 86_400_000)
       expect(runtime.store.tickets.get(id)).toEqual(original)
     } finally { await runtime.stop() }
+  })
+
+  it('warns about the model estimate without stopping at the old deadline', async () => {
+    const { runtime, id } = runningBudget(120_000, 0, 0)
+    try {
+      runtime.enforceRuntimeBudgets(start + 120_000)
+      runtime.enforceRuntimeBudgets(start + 120_000 + grace + 1)
+      expect(runtime.store.tickets.get(id)!.ended).toBeUndefined()
+      const warnings = runtime.engine.history(id).filter(event => event.type === 'budget_warning')
+      expect(warnings).toMatchObject([{ by: { kind: 'system' }, detail: { kind: 'estimate', budgetMs: 120_000 } }])
+      expect(runtime.store.tickets.get(id)!.inputs).toEqual([])
+      expect(runtime.store.tickets.get(id)!.notes).toEqual([expect.objectContaining({ text: expect.stringContaining('不会停止 Worker') })])
+    } finally { await runtime.stop() }
+  })
+
+  it('delivers a ready result during the configured grace on a backend that queues inputs', async () => {
+    let finish!: () => void
+    const releaseReport = new Promise<void>(resolve => { finish = resolve })
+    const { runtime, driver } = context('budget-delivery', new InstantDriver(releaseReport), true)
+    try {
+      runtime.saveSettings({ acceptMode: 'auto', watchdog: { maxRuntimeMs: 120_000 } })
+      const id = runtime.engine.createTicket({ title: 'budget delivery', text: 'work' }).ticketId!
+      await runtime.effects.runDue()
+      const startedAt = await waitFor(() => runtime.store.tickets.get(id)?.assignments.at(-1)?.startedAt, 2_000)
+      const softDeadline = Date.parse(startedAt) + 120_000
+      runtime.enforceRuntimeBudgets(softDeadline)
+      await runtime.effects.runDue()
+      finish()
+      await waitFor(() => runtime.engine.history(id).find(event => event.detail?.phase === 'final'), 2_000)
+      runtime.enforceRuntimeBudgets(softDeadline + grace)
+      const ticket = runtime.store.tickets.get(id)!
+      expect(ticket.ended?.outcome).toBe('done')
+      expect(ticket.result).toMatchObject({ files: ['result.md'] })
+      expect(ticket.acceptance?.status).toBe('accepted')
+      expect(driver.launched).toHaveLength(1)
+    } finally { finish(); await runtime.stop() }
   })
 })
 

@@ -98,8 +98,7 @@ type ChatChannel = ChatSettings['channels'][number]
  *
  * The three numbers answer the only three questions an operator has about a bridge they cannot see:
  * - `waiting` — messages held because their platform identity is not mapped. The operator's to answer.
- * - `pendingReplies` — answers written to `out/` that no bridge has collected. **This one being non-zero for a while
- *   means the bridge is not running**, which is otherwise invisible: ordin did its part and the room heard nothing.
+ * - `pendingReplies` — replies still in `out/`, including those with incomplete delivery receipts.
  * - `lastAcceptedAt` — when something last came in, so "the bridge is connected but the room is quiet" is
  *   distinguishable from "nothing has arrived in three days".
  */
@@ -109,6 +108,15 @@ export interface ChannelFact {
   readonly waiting: number
   readonly settling: number
   readonly pendingReplies: number
+  readonly outbound?: {
+    readonly unrecorded: number
+    readonly partial: number
+    readonly unknown: number
+    readonly failed: number
+    readonly unsupported: number
+    readonly attention: readonly string[]
+  }
+  readonly outboundError?: string
   readonly lastAcceptedAt?: string
   /**
    * When this channel's bridge last touched its heartbeat file (G-2/B-6): the panel shows "X seconds/minutes ago",
@@ -424,19 +432,39 @@ export class ChatSource implements TwoWaySource {
    * A failure here is not a failure of the channel: the scan already took what it took, so these two are reported as
    * absent rather than turning a working channel into an error row.
    */
-  private async outboundFacts(directory: string): Promise<{ pendingReplies: number; lastAcceptedAt?: string }> {
+  private async outboundFacts(directory: string): Promise<Pick<ChannelFact, 'pendingReplies' | 'outbound' | 'outboundError' | 'lastAcceptedAt'>> {
     let pendingReplies = 0
+    let outboundError: string | undefined
+    const outbound = { unrecorded: 0, partial: 0, unknown: 0, failed: 0, unsupported: 0, attention: [] as string[] }
     try {
-      const entries = await readdir(join(directory, OUT_DIR), { withFileTypes: true })
-      pendingReplies = entries.filter(entry => entry.isFile() && !entry.name.startsWith('.')
-        && entry.name.toLowerCase().endsWith('.md')).length
-    } catch { /* no `out/` yet: nothing has ever been owed back through this channel */ }
-    try {
-      const info = await stat(join(directory, TAKEN.accepted))
-      return { pendingReplies, lastAcceptedAt: new Date(info.mtimeMs).toISOString() }
-    } catch {
-      return { pendingReplies }
+      const path = join(directory, OUT_DIR)
+      const entries = await readdir(path, { withFileTypes: true })
+      const byName = new Map(entries.map(entry => [entry.name, entry]))
+      for (const { name } of entries.filter(entry => entry.isFile() && !entry.name.startsWith('.') && entry.name.toLowerCase().endsWith('.md'))) {
+        pendingReplies++
+        const receipt = byName.get(`.${name}.delivery.json`)
+        if (!receipt && !byName.has(`.${name}.progress`)) { outbound.unrecorded++; continue }
+        const labels: string[] = []
+        try {
+          if (!receipt?.isFile()) throw new Error('No readable delivery receipt')
+          const parsed = JSON.parse(await readFile(join(path, receipt.name), 'utf8'))
+          if (!Array.isArray(parsed.text) || !Array.isArray(parsed.files)) throw new Error('Invalid delivery receipt')
+          const statuses: unknown[] = [...parsed.text, ...parsed.files].map(item => item?.status)
+          if (!statuses.length || statuses.some(status => !['pending', 'delivered', 'failed', 'unsupported', 'unknown'].some(value => value === status))) {
+            throw new Error('Invalid delivery status')
+          }
+          if (statuses.includes('delivered') && statuses.some(status => status !== 'delivered')) { outbound.partial++; labels.push('部分送达') }
+          if (statuses.includes('unknown')) { outbound.unknown++; labels.push('结果待确认') }
+          if (statuses.includes('failed')) { outbound.failed++; labels.push('有明确失败项') }
+          if (statuses.includes('unsupported')) { outbound.unsupported++; labels.push('有不支持的附件') }
+        } catch { outbound.unknown++; labels.push('回执不可读或为旧格式') }
+        if (labels.length && outbound.attention.length < LIST_LIMIT) outbound.attention.push(`${name}：${labels.join('、')}`)
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') outboundError = reason(error)
     }
+    const info = await stat(join(directory, TAKEN.accepted)).catch(() => undefined)
+    return { pendingReplies, outbound, outboundError, ...(info ? { lastAcceptedAt: new Date(info.mtimeMs).toISOString() } : {}) }
   }
 
   /** One channel's directory: what is settling, what is waiting, and everything taken. */

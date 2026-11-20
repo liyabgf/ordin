@@ -5,7 +5,7 @@
  * This is the M1 exit story: 对话 → 分流 → 建任务 → 执行 → 独立验收 → 回报.
  */
 import { createServer, type Server } from 'node:http'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { boot } from '../src/app/boot.ts'
@@ -81,14 +81,15 @@ const waitFor = async <T>(read: () => T | undefined, timeoutMs = 8000): Promise<
 }
 
 describe('M1 end-to-end: a message becomes accepted, reported work', () => {
-  it('runs 对话 → 建任务 → 执行 → 独立验收 → 回报 through the real HTTP API', async () => {
+  it('runs 对话 → 建任务 → 执行 → 独立验收 → 回报 and keeps the result after restart', async () => {
     const model = createServer()
     const stub = await stubModel(model)
     const stateDir = tempDir('ordin-e2e-')
     const config = resolveConfig({ stateDir, workRoot: join(stateDir, 'work'), inboxDir: join(stateDir, 'inbox'), port: 0 })
-    const infrastructure = boot({ config, logger: silent as never })
-    const proc = new ProcessRegistry()
-    const runtime = createRuntime(infrastructure, { logger: silent as never, driver: new ProductiveDriver(), proc, notifier: null })
+    const startable = () => createRuntime(boot({ config, logger: silent }), {
+      logger: silent, driver: new ProductiveDriver(), proc: new ProcessRegistry(), notifier: null,
+    })
+    let runtime = startable()
     try {
       await runtime.start()
       runtime.saveSettings({
@@ -133,6 +134,27 @@ describe('M1 end-to-end: a message becomes accepted, reported work', () => {
 
       const asset = await waitFor(() => runtime.store.assets.list({ includeArchived: true })[0])
       expect(asset).toMatchObject({ source: { ticketId: ticket.id } })
+
+      await runtime.stop()
+      expect(existsSync(join(stateDir, 'ordin.lock'))).toBe(false)
+      runtime = startable()
+      await runtime.start()
+      const get = async (route: string) => {
+        const reply = await fetch(runtime.status().panel + 'api/' + route, { headers: { [REQUEST_HEADER]: '1' } })
+        expect(reply.status, route).toBe(200)
+        return await reply.json()
+      }
+      expect(await get(`tickets/${ticket.id}`)).toMatchObject({
+        id: ticket.id, stage: 'done', ended: finished.ended, acceptance: { status: 'accepted' }, result: finished.result,
+      })
+      expect(runtime.store.tickets.open().map(row => row.id)).not.toContain(ticket.id)
+      const { events } = await get(`tickets/${ticket.id}/events`) as { events: { type: string; detail?: unknown }[] }
+      expect(events.filter(event => event.type === 'report')).toEqual([
+        expect.objectContaining({ detail: expect.objectContaining({ state: 'ready' }) }),
+      ])
+      const reopenedHistory = await get('conversations/e2e-1/messages') as { messages: typeof rows }
+      expect(reopenedHistory.messages.filter(row => row.ticketId === ticket.id)).toEqual([outcome])
+      expect(stub.calls).toBe(2)
     } finally {
       await runtime.stop()
       await new Promise<void>(resolve => model.close(() => resolve()))

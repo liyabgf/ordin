@@ -151,7 +151,8 @@ const outbound = async ({ thread, text, name }) => {
       const msgId = res?.data?.message_id
       return msgId ? { messageId: String(msgId) } : undefined
     } catch (error) {
-      log.warn('reply-failed-falling-back-to-chat', { thread, error: String(error?.message ?? error) })
+      // A timeout or malformed response leaves delivery unknown; falling back could duplicate the reply.
+      throw new Error(`reply delivery result unknown: ${String(error?.message ?? error)}`)
     }
   }
   if (chatId === undefined) throw new Error(`no chat known for thread ${thread ?? '(none)'} — the bridge has not seen an inbound message yet`)

@@ -44,12 +44,17 @@ function read(path: string): LockRecord | undefined {
 /** A held lock, released by `release()` and by the process ending. */
 export class StateLock {
   private released = false
-  constructor(readonly path: string, readonly record: LockRecord) {}
+  private readonly releaseOnExit = (): void => { this.release() }
+
+  constructor(readonly path: string, readonly record: LockRecord) {
+    process.once('exit', this.releaseOnExit)
+  }
 
   /** Give the directory up, so another deployment may take it. */
   release(): void {
     if (this.released) return
     this.released = true
+    process.off('exit', this.releaseOnExit)
     // Only our own lock is removed; one stolen meanwhile belongs to its new holder.
     if (read(this.path)?.token === this.record.token) {
       try { unlinkSync(this.path) } catch { /* already gone */ }
@@ -69,11 +74,7 @@ export function takeLock(directory: string): StateLock {
     try {
       const fd = openSync(path, 'wx')
       try { writeFileSync(fd, JSON.stringify(record)) } finally { closeSync(fd) }
-      const lock = new StateLock(path, record)
-      // A crash must not leave the directory locked for the next start.
-      const release = (): void => { lock.release() }
-      process.once('exit', release)
-      return lock
+      return new StateLock(path, record)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
       const holder = read(path)

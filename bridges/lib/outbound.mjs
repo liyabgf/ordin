@@ -14,7 +14,8 @@
  * Files are never deleted on success, only moved: what the operator's colleagues received is worth keeping, and
  * `keepDays` prunes it on an age the operator chooses.
  */
-import { mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readdir, rename, rm, stat, writeFile, readFile } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { parse } from './frontmatter.mjs'
 import { describeError } from './log.mjs'
@@ -95,7 +96,7 @@ async function readText(path) {
  * @param {number} [options.limit] the platform's per-message character limit; 0 or omitted sends the reply as one
  *   piece, which is right for a platform whose limit has not been verified rather than a guess that splits replies
  *   for no reason.
- * @returns {Promise<{ sent: number, failed: number, skipped: number }>}
+ * @returns {Promise<{ sent: number, failed: number, skipped: number, partial: number, unknown: number }>}
  */
 /** Maximum size of a single outbound file attachment (20 MB). */
 export const MAX_OUTBOUND_FILE_BYTES = 20 * 1024 * 1024
@@ -103,7 +104,7 @@ export const MAX_OUTBOUND_FILE_BYTES = 20 * 1024 * 1024
 export async function drainOut({ directory, send, sendFile, onSent, log = {}, keepDays = 7, limit = 0 }) {
   const out = join(directory, OUT)
   const sent = join(out, SENT)
-  const tally = { sent: 0, failed: 0, skipped: 0 }
+  const tally = { sent: 0, failed: 0, skipped: 0, partial: 0, unknown: 0 }
   let entries
   try {
     entries = await readdir(out, { withFileTypes: true })
@@ -149,56 +150,99 @@ export async function drainOut({ directory, send, sendFile, onSent, log = {}, ke
     const ticket = fields.ticket === '' || fields.ticket === undefined ? undefined : fields.ticket
     const files = (fields.files ?? '').split(',').map(f => f.trim()).filter(Boolean)
     const pieces = chunkText(body, limit)
-    // Where a multi-part reply got to before it failed, so the retry does not post the first half of an answer to the
-    // room a second time. Dot-prefixed, so this loop's own "never a dotfile" rule keeps it from being read as a reply.
-    const progress = join(out, `.${entry.name}.progress`)
-    let from = 0
-    if (pieces.length > 1) {
-      try {
-        const recorded = Number.parseInt(await readText(progress), 10)
-        if (Number.isInteger(recorded) && recorded > 0 && recorded < pieces.length) from = recorded
-      } catch { /* no progress recorded: this is the first attempt */ }
-    }
-    let broke = false
-    for (let index = from; index < pieces.length; index += 1) {
-      try {
-        // `part`/`parts` and `ticket` only when present, so a single-piece reply with no ticket field stays
-        // byte-identical to what existing tests and bridges expect.
-        const receipt = await send({
+    const statePath = join(out, `.${entry.name}.delivery.json`)
+    const legacyPath = join(out, `.${entry.name}.progress`)
+    const key = createHash('sha256').update(JSON.stringify([text, pieces])).digest('hex')
+    try {
+      const saved = await readFile(statePath, 'utf8').catch(error => { if (error.code !== 'ENOENT') throw error })
+      if (saved === undefined) {
+        // Older bridges did not record whether the last attempted part arrived.
+        const legacy = await lstat(legacyPath).catch(error => { if (error.code !== 'ENOENT') throw error })
+        if (legacy) throw new Error('Legacy delivery progress needs manual confirmation')
+      }
+      const state = saved === undefined ? {
+        key, text: pieces.map(() => ({ status: 'pending' })),
+        files: files.map(filePath => ({ filePath, status: 'pending' })),
+      } : JSON.parse(saved)
+      const valid = item => ['pending', 'delivered', 'failed', 'unsupported', 'unknown'].includes(item?.status)
+      if (state.key !== key || state.text?.length !== pieces.length || !state.text.every(valid) ||
+          state.files?.length !== files.length || !state.files.every((item, i) => valid(item) && item.filePath === files[i])) {
+        throw new Error('Delivery receipt does not match the queued reply')
+      }
+      const persist = async () => {
+        const temp = statePath + '.' + randomUUID()
+        try {
+          await writeFile(temp, JSON.stringify(state), { flag: 'wx', mode: 0o600 })
+          await rename(temp, statePath)
+        } finally { await rm(temp, { force: true }) }
+      }
+      const deliver = async (item, sendItem, label) => {
+        // Record uncertainty before the external side effect. A crash here must never authorize a retry.
+        item.status = 'unknown'
+        delete item.reason
+        await persist()
+        let result
+        try {
+          result = await sendItem()
+          item.status = result?.status === 'unknown' ? 'unknown' : 'delivered'
+        } catch (error) {
+          item.status = error?.deliveryStatus === 'failed' ? 'failed' : 'unknown'
+          log.warn?.('reply-item-failed', { name: entry.name, item: label, status: item.status, ...describeError(error) })
+        }
+        await persist()
+        return result
+      }
+      for (const [index, item] of state.text.entries()) {
+        if (item.status === 'delivered') continue
+        if (item.status === 'unknown') break
+        const receipt = await deliver(item, () => send({
           thread, text: pieces[index], name: entry.name,
           ...(ticket === undefined ? {} : { ticket }),
           ...(pieces.length > 1 ? { part: index + 1, parts: pieces.length } : {}),
-        })
+        }), index + 1)
+        if (item.status !== 'delivered') break
         if (ticket !== undefined && receipt?.messageId !== undefined) {
-          await onSent?.({ messageId: String(receipt.messageId), ticketId: ticket, thread })
+          try { await onSent?.({ messageId: String(receipt.messageId), ticketId: ticket, thread }) }
+          catch (error) { log.warn?.('reply-correlation-failed', { name: entry.name, ...describeError(error) }) }
         }
-      } catch (error) {
-        log.error?.('reply-send-failed', { name: entry.name, part: index + 1, parts: pieces.length, ...describeError(error) })
-        if (pieces.length > 1 && index > from) await writeFile(progress, String(index), 'utf8').catch(() => {})
-        broke = true
-        break
       }
-    }
-    if (broke) { tally.failed += 1; continue }
-    if (files.length > 0 && typeof sendFile === 'function') {
-      for (const filePath of files) {
-        try {
-          const { lstat: lstatFile } = await import('node:fs/promises')
-          const info = await lstatFile(filePath)
-          if (info.isSymbolicLink() || !info.isFile() || info.size > MAX_OUTBOUND_FILE_BYTES) {
-            log.warn?.('reply-file-skipped', { name: entry.name, filePath, size: info.size, symbolicLink: info.isSymbolicLink() })
+      if (state.text.every(item => item.status === 'delivered')) {
+        for (const item of state.files) {
+          if (item.status !== 'pending' && item.status !== 'failed') continue
+          const filePath = item.filePath
+          if (!sendFile) {
+            Object.assign(item, { status: 'unsupported', reason: 'channel-does-not-support-attachments' })
+            await persist()
             continue
           }
-          await sendFile({ thread, filePath, ticket, name: entry.name })
-        } catch (error) {
-          // A missing or rejected attachment does not block the text reply from completing.
-          log.warn?.('reply-file-failed', { name: entry.name, filePath, ...describeError(error) })
+          const info = await lstat(filePath).catch(error => {
+            log.warn?.('reply-file-unreadable', { name: entry.name, filePath, ...describeError(error) })
+          })
+          if (!info || info.isSymbolicLink() || !info.isFile() || info.size > MAX_OUTBOUND_FILE_BYTES) {
+            Object.assign(item, { status: info ? 'unsupported' : 'failed', reason: info ? 'file-policy' : 'file-unreadable' })
+            await persist()
+            continue
+          }
+          await deliver(item, () => sendFile({ thread, filePath, ticket, name: entry.name }), filePath)
         }
       }
+      const items = [...state.text, ...state.files]
+      if (!items.every(item => item.status === 'delivered')) {
+        if (items.some(item => item.status === 'unknown')) tally.unknown += 1
+        else if (items.some(item => item.status === 'delivered')) tally.partial += 1
+        else tally.failed += 1
+        continue
+      }
+      await mkdir(sent, { recursive: true })
+      await rename(path, join(sent, entry.name))
+      await rm(statePath, { force: true }).catch(error => {
+        log.warn?.('reply-receipt-cleanup-failed', { name: entry.name, ...describeError(error) })
+      })
+    } catch (error) {
+      tally.unknown += 1
+      log.error?.('reply-receipt-unavailable', { name: entry.name, ...describeError(error) })
+      continue
     }
-    if (pieces.length > 1) await rm(progress, { force: true }).catch(() => {})
-    await mkdir(sent, { recursive: true })
-    await rename(path, join(sent, entry.name))
     tally.sent += 1
     log.info?.('reply-sent', {
       name: entry.name, thread: fields.thread ?? null, chars: body.length,

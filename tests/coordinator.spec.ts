@@ -2,6 +2,7 @@
  * The coordinator tools and loop: the model chooses actions, the program performs and verifies them.
  * Every tool gets a positive and a negative case; the loop is exercised with a scripted model.
  */
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { Engine, Memory, parseSettings, settingsPolicy, type Delivery, type Executor, type Report, type Ticket } from '../src/core/index.ts'
@@ -59,10 +60,11 @@ const tool = async (name: string, args: Record<string, unknown>, context: Return
   await executeCoordinatorTool(name, JSON.stringify(args), context.host, 'conv-1', new AbortController().signal)
 
 describe('coordinator tool schemas', () => {
-  it('exposes the nine contract tools with names the model sees', () => {
+  it('exposes the closed manager-safe tool surface', () => {
     expect(COORDINATOR_TOOLS.map(t => t.name)).toEqual([
-      'reply', 'search_assets', 'get_task_status', 'list_my_tasks', 'create_task',
-      'add_task_input', 'cancel_or_pause_task', 'propose_memory', 'clarify',
+      'asset_search', 'asset_get', 'asset_read_sample', 'asset_revisions', 'asset_relations',
+      'attach_asset_to_task', 'inspect_runtime', 'reply', 'skill_search', 'skill_get', 'recipe_list', 'recipe_get', 'memory_search', 'get_task_status',
+      'list_my_tasks', 'create_task', 'add_task_input', 'cancel_or_pause_task', 'propose_memory', 'clarify',
     ])
     for (const schema of COORDINATOR_TOOLS) {
       expect(schema.description.length).toBeGreaterThan(10)
@@ -72,6 +74,35 @@ describe('coordinator tool schemas', () => {
 })
 
 describe('coordinator tools', () => {
+  it('serves only pinned pilot recipes and never uses one to authorize attachment', async () => {
+    const context = harness()
+    const listed = await tool('recipe_list', {}, context)
+    expect(listed.ok).toBe(true)
+    const summaries = listed.data?.recipes as { id: string; revision: number; contentHash: string }[]
+    expect(summaries.map(recipe => recipe.id)).toEqual(['compare-assets', 'attach-task-materials', 'diagnose-execution'])
+    expect((await tool('recipe_list', { enabled: false }, context)).ok).toBe(false)
+    const created = await tool('create_task', { title: 'Target', text: 'Work' }, context)
+    const ticketId = String(created.data?.ticketId)
+    const knownTools = COORDINATOR_TOOLS.map(definition => definition.name)
+    for (const { id, revision, contentHash } of summaries) {
+      const ref = { id, revision, contentHash }
+      const exact = await tool('recipe_get', ref, context)
+      expect(exact.ok).toBe(true)
+      const { contentHash: returnedHash, ...contract } = exact.data?.recipe as Record<string, unknown>
+      expect(returnedHash).toBe(contentHash)
+      expect(createHash('sha256').update(JSON.stringify(contract)).digest('hex')).toBe(contentHash)
+      const required = contract.requiredTools as string[]
+      expect(required.length).toBeGreaterThan(0)
+      expect(knownTools).toEqual(expect.arrayContaining(required))
+      expect((await tool('recipe_get', { ...ref, revision: revision + 1 }, context)).ok).toBe(false)
+      expect((await tool('recipe_get', { ...ref, contentHash: 'a'.repeat(64) }, context)).ok).toBe(false)
+    }
+    const pin = summaries[1]!
+    expect((await tool('recipe_get', { id: 'model-generated', revision: pin.revision, contentHash: pin.contentHash }, context)).ok).toBe(false)
+    expect((await tool('attach_asset_to_task', { ticketId }, context)).ok).toBe(false)
+    expect(context.store.tickets.get(ticketId)?.inputs ?? []).toEqual([])
+  })
+
   it('uses operator selected managed revisions when the model omits references and refuses revoked bytes', async()=>{
     const c=harness(), dir=tempDir('coord-managed-'), blob=await new AssetObjects(dir).put(Buffer.from([0,255,1])), at=new Date().toISOString();
     const asset={id:'operator-selected',ownerProfileId:'default',storageVersion:1,storage:{kind:'managed-object',...blob},contentHash:blob.objectKey,revision:1,status:'active',name:'input.bin',source:{ticketId:'source-removed',path:'input.bin'},kind:'reference',createdAt:at,updatedAt:at,archived:false};
@@ -99,7 +130,8 @@ describe('coordinator tools', () => {
     const context = harness()
     const outcome = await tool('reply', { text: '你好，我在。' }, context)
     expect(outcome.ok).toBe(true)
-    expect(context.sent).toEqual(['你好，我在。'])
+    expect(context.sent).toEqual([])
+    expect(outcome.data).toEqual({ text: '你好，我在。' })
     expect(context.store.tickets.list()).toHaveLength(0)
   })
 
@@ -107,7 +139,8 @@ describe('coordinator tools', () => {
     const context = harness()
     const outcome = await tool('clarify', { question: '你指哪一份报告？' }, context)
     expect(outcome.ok).toBe(true)
-    expect(context.sent[0]).toContain('哪一份')
+    expect(context.sent).toEqual([])
+    expect(outcome.data).toEqual({ text: '你指哪一份报告？' })
   })
 
   it('create_task goes through the gate and annotates plan and backend', async () => {
@@ -145,18 +178,19 @@ describe('coordinator tools', () => {
     const ticketId = String(created.data?.ticketId)
     context.engine.annotate(ticketId, {
       workerBackend: 'codex', workerSelectionReason: 'coordinator-choice', workerVersion: '1.2.3',
-      workerDirectory: '/tmp/ticket', workerCheckedAt: '2026-11-16T00:00:00Z', workerProbeOk: true,
+      workerDirectory: '/tmp/ticket', workerBinary: '/home/operator/bin/worker', workerProbeProblem: 'failure /home/operator/private', workerCheckedAt: '2026-11-16T00:00:00Z', workerProbeOk: true,
     })
     context.store.events.append({ ticketId, at: '2026-11-16T00:00:01Z', type: 'worker_phase', detail: { phase: 'report', reportState: 'progress' } })
     context.store.events.append({ ticketId, at: '2026-11-16T00:00:02Z', type: 'worker_text', detail: { text: '正在整理' } })
     const status = await tool('get_task_status', { ticketId }, context)
     expect(status.ok).toBe(true)
     expect(status.data?.title).toBe('t')
-    expect(status.data?.workerDispatch).toMatchObject({ backend: 'codex', selectionReason: 'coordinator-choice', version: '1.2.3', directory: '/tmp/ticket', probeOk: true })
+    expect(status.data?.workerDispatch).toMatchObject({ backend: 'codex', selectionReason: 'coordinator-choice', version: '1.2.3', probeOk: true })
+    expect(JSON.stringify([created, status])).not.toMatch(/\/tmp\/(work|ticket)/)
+    expect(JSON.stringify(status)).not.toContain('/home/operator')
     expect(status.data?.recentStage).toBe('report')
     expect(status.data?.progress).toEqual([
       { at: '2026-11-16T00:00:01Z', type: 'worker_phase', phase: 'report', reportState: 'progress' },
-      { at: '2026-11-16T00:00:02Z', type: 'worker_text', text: '正在整理' },
     ])
     expect((await tool('get_task_status', { ticketId: 'nope' }, context)).ok).toBe(false)
   })
@@ -241,15 +275,11 @@ describe('coordinator tools', () => {
     expect(context.store.memory.list({}).length).toBe(2)
   })
 
-  it('search_assets finds assets and memory by text', async () => {
+  it('memory_search excludes inferred memory and does not return assets', async () => {
     const context = harness()
-    context.store.assets.save({ id: 'a-1', kind: 'report', name: 'Q3 竞品分析', description: '三家对比', createdAt: '2026-11-15T00:00:00Z', updatedAt: '2026-11-15T00:00:00Z' })
     await tool('propose_memory', { kind: 'project-fact', content: '竞品分析用的是三家公开财报' }, context)
-    const found = await tool('search_assets', { query: '竞品' }, context)
-    expect(found.ok).toBe(true)
-    expect((found.data?.assets as unknown[]).length).toBe(0) // Unregistered imports have no trusted artifact source.
-    // F2 semantic migration: inferred proposals remain management-only until explicit operator confirmation.
-    expect((found.data?.memory as unknown[]).length).toBe(0)
+    const found = await tool('memory_search', { query: '竞品' }, context)
+    expect(found.data).toEqual({ memory: [] })
   })
 
   it('rejects unknown tools and malformed arguments loudly', async () => {
@@ -292,6 +322,91 @@ describe('standing context', () => {
   })
 })
 describe('coordinator loop', () => {
+  it.each(['reply', 'clarify'])('publishes a single final message after %s', async name => {
+    const c = harness()
+    const key = name === 'reply' ? 'text' : 'question'
+    c.scripted.push({ text: 'internal preamble', toolCalls: [{ id: 'draft', name, arguments: JSON.stringify({ [key]: 'draft' }) }] }, finalAnswer('final'))
+    const result = await runCoordinatorTurn(c.host, 'conv-1', 'hello', signal())
+    expect(c.sent).toHaveLength(1)
+    expect(result.toolOutcomes[0]?.data).toEqual({ text: 'draft' })
+    expect(c.sent).toEqual(['final'])
+    expect(c.store.conversationMessages.list('conv-1').map(row => row.content)).toEqual(['hello', 'final'])
+  })
+  it('requires current explicit approval for selected pins and deduplicates tool calls', async () => {
+    const c = harness()
+    const assets = new AssetCatalog(c.store, tempDir('manager-turn-'))
+    const imported = assets.import({ name: 'Notes', text: 'source', kind: 'document' })
+    const ref = assets.resolveMetadata(String(imported.id)).ref
+    const ticketId = String((await tool('create_task', { title: 'Existing', text: 'work' }, c)).data?.ticketId)
+    const attachment = { name: 'attach_asset_to_task', id: 'attach', arguments: JSON.stringify({ ticketId }) }
+    const host = { ...c.host, assets, selectedAssetRefs: [ref] }
+    c.scripted.push({ text: '', toolCalls: [attachment] }, finalAnswer('Read only'))
+    const read = await runCoordinatorTurn(host, 'conv-1', '请读一下', signal())
+    expect(read.toolOutcomes[0]?.ok).toBe(false)
+    expect(c.engine.require(ticketId).inputs).toEqual([])
+    c.scripted.push({ text: '', toolCalls: [attachment, { ...attachment, id: 'again' }, { name: 'create_task', id: 'extra', arguments: '{"title":"extra","text":"unrequested"}' }] }, finalAnswer('Saved'))
+    const attached = await runCoordinatorTurn(host, 'conv-1', '把所选资产添加到任务 ' + ticketId, signal())
+    expect(attached.toolOutcomes.map(result => result.ok)).toEqual([true, true, false])
+    expect(attached.toolOutcomes[0]?.data).toMatchObject({ assetRefs: [ref], deliveryState: 'queued' })
+    expect(attached.toolOutcomes[1]?.data).toEqual(attached.toolOutcomes[0]?.data)
+    expect(c.engine.require(ticketId).inputs).toHaveLength(1)
+    expect(c.store.tickets.list()).toHaveLength(1)
+    c.scripted.push({ text: '', toolCalls: [attachment] }, finalAnswer('Receipt'))
+    const replayed = await runCoordinatorTurn(host, 'conv-1', '把所选资产添加到任务 ' + ticketId, signal())
+    expect(replayed.toolOutcomes[0]?.data).toEqual(attached.toolOutcomes[0]?.data)
+    expect(c.engine.require(ticketId).inputs).toHaveLength(1)
+    assets.patch(String(imported.id), { name: 'Updated' })
+    const nextRef = assets.resolveMetadata(String(imported.id)).ref
+    c.scripted.push({ text: '', toolCalls: [attachment] }, finalAnswer('New version'))
+    await runCoordinatorTurn({ ...host, selectedAssetRefs: [nextRef] }, 'conv-1', '把所选资产添加到任务 ' + ticketId, signal())
+    expect(c.engine.require(ticketId).inputs).toHaveLength(2)
+    const other = assets.import({ name: 'Other notes', text: 'other material', kind: 'document' })
+    const otherRef = assets.resolveMetadata(String(other.id)).ref
+    const pair = { ...host, selectedAssetRefs: [ref, otherRef] }
+    c.scripted.push({ text: '', toolCalls: [attachment] }, finalAnswer('Pair'))
+    const pairResult = await runCoordinatorTurn(pair, 'conv-1', '把所选资产添加到任务 ' + ticketId, signal())
+    expect(pairResult.toolOutcomes[0]?.ok).toBe(true)
+    const ticket = c.engine.require(ticketId)
+    c.store.tickets.save({ ...ticket, ended: { outcome: 'done', at: new Date().toISOString(), by: 'agent', reason: 'fixture completion' } })
+    c.scripted.push({ text: '', toolCalls: [attachment] }, finalAnswer('Receipt'))
+    const endedReplay = await runCoordinatorTurn({ ...pair, selectedAssetRefs: [otherRef, ref] }, 'conv-1', '把所选资产添加到任务 ' + ticketId, signal())
+    expect(endedReplay.toolOutcomes[0]?.data).toMatchObject({ inputId: pairResult.toolOutcomes[0]?.data?.inputId, deliveryState: 'not-delivered' })
+    assets.patch(String(imported.id), { name: 'Later' })
+    c.scripted.push({ text: '', toolCalls: [attachment] }, finalAnswer('Rejected'))
+    const endedNew = await runCoordinatorTurn({ ...host, selectedAssetRefs: [assets.resolveMetadata(String(imported.id)).ref] }, 'conv-1', '把所选资产添加到任务 ' + ticketId, signal())
+    expect(endedNew.toolOutcomes[0]?.ok).toBe(false)
+    expect(c.engine.require(ticketId).inputs).toHaveLength(3)
+  })
+
+  it('discovers only approved skills and reads an exact untrusted revision', async () => {
+    const context = harness()
+    const now = new Date().toISOString()
+    const hash = (value: string) => createHash('sha256').update(value).digest('hex')
+    const saved = { name: 'ordin-approved', title: 'Approved', description: 'searchable craft', content: '# instructions', revision: 2, contentHash: hash('# instructions'), createdAt: now, updatedAt: now, enabled: true, state: 'active' as const, approval: { actor: 'operator', revision: 2, contentHash: hash('# instructions'), at: now }, useCount: 0 }
+    const candidate = { ...saved, name: 'ordin-candidate', state: 'candidate' as const, enabled: false, approval: undefined }
+    const verified = { ...saved, source: 'worker' as const, validation: { kind: 'syntax' as const, result: 'verified' as const, exitCode: 0, stdoutDigest: hash(''), revision: 2, contentHash: saved.contentHash, command: [], at: now } }
+    const staleApproval = { ...verified, name: 'ordin-stale', approval: { ...saved.approval, revision: 1 } }
+    const disabled = { ...verified, name: 'ordin-disabled', enabled: false }
+    const manual = { ...saved, name: 'ordin-manual', approval: undefined, description: 'manual craft' }
+    const host: CoordinatorHost = { ...context.host, skills: () => [verified, candidate, staleApproval, disabled, manual], complete: async messages => {
+      expect(messages[0]?.content).not.toContain('searchable craft')
+      return finalAnswer('ok')
+    } }
+    for (const item of [candidate, staleApproval, disabled]) {
+      const args = { name: item.name, revision: 2, contentHash: item.contentHash }
+      expect((await executeCoordinatorTool('skill_get', JSON.stringify(args), host, 'conv-1', signal())).ok).toBe(false)
+      expect((await executeCoordinatorTool('create_task', JSON.stringify({ title: 'task', text: 'work', skillRefs: [args] }), host, 'conv-1', signal())).ok).toBe(false)
+    }
+    expect((await executeCoordinatorTool('skill_search', JSON.stringify({ query: 'manual craft' }), host, 'conv-1', signal())).data?.skills).toMatchObject([{ name: manual.name }])
+    await runCoordinatorTurn(host, 'conv-1', '检查手艺', signal())
+    const found = await executeCoordinatorTool('skill_search', JSON.stringify({ query: 'searchable' }), host, 'conv-1', new AbortController().signal)
+    expect(found.data?.skills).toHaveLength(1)
+    const read = await executeCoordinatorTool('skill_get', JSON.stringify({ name: saved.name, revision: 2, contentHash: saved.contentHash }), host, 'conv-1', new AbortController().signal)
+    expect(read.data).toMatchObject({ name: saved.name, revision: 2, content: '# instructions', untrustedContent: true })
+    const stale = await executeCoordinatorTool('skill_get', JSON.stringify({ name: saved.name, revision: 2, contentHash: '0'.repeat(64) }), host, 'conv-1', new AbortController().signal)
+    expect(stale.ok).toBe(false)
+  })
+
   it('answers directly when the model calls no tool', async () => {
     const context = harness()
     context.scripted.push({ text: '今天想聊点什么？', toolCalls: [] })
@@ -312,6 +427,7 @@ describe('coordinator loop', () => {
     expect(result.toolOutcomes[0]!.ok).toBe(true)
     expect(result.reply).toContain('安排')
     expect(context.store.tickets.list()).toHaveLength(1)
+    expect(JSON.stringify(result.toolOutcomes)).not.toMatch(/\/tmp\/(?:work|ticket)/)
   })
 
   it('keeps the conversation history so a follow-up sees the earlier turn', async () => {
@@ -379,6 +495,7 @@ describe('F1-R1 coordinator regressions', () => {
       return finalAnswer('Done reading')
     } }
     expect((await runCoordinatorTurn(host, 'tools', 'look up', signal())).rounds).toBe(2)
+    expect(c.sent).toEqual(['Done reading'])
   })
 
   it('uses latest history including current input, preserving creation and collision-free UUID ids', async () => {

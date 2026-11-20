@@ -137,6 +137,71 @@ async function captureError(promise: Promise<unknown>): Promise<DeskLlmError> {
   throw new Error('expected deskLlmGenerate to reject, but it resolved')
 }
 
+describe('model stream limits', () => {
+  const KiB = 1024
+  const textFrame = (text: string) => 'data: ' + chunk({ content: text }) + '\r\n\r\n'
+  const toolFrame = (args: string) => 'data: ' + chunk({
+    tool_calls: [{ index: 0, id: 'call_1', function: { name: 'ordin_list_tickets', arguments: args } }],
+  }) + '\n\n'
+  const end = 'data: [DONE]\n\n'
+
+  function generate(frames: readonly string[]) {
+    let read = 0
+    let canceled = false
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (read === frames.length) controller.close()
+        else controller.enqueue(new TextEncoder().encode(frames[read++]!))
+      },
+      cancel() { canceled = true },
+    }, { highWaterMark: 0 })
+    const response = deskLlmGenerate({
+      baseUrl: 'http://127.0.0.1/v1', model: 'synthetic',
+      fetchFn: async () => new Response(body),
+    }, history, tools)
+    return { response, snapshot: () => ({ read, canceled, locked: body.locked }) }
+  }
+
+  it('rejects excess wire bytes even when the payload contains only ignored comments', async () => {
+    const comment = ':' + '汉'.repeat(64 * KiB) + '\n\n'
+    const { response, snapshot } = generate([...Array(48).fill(comment), end])
+    await expect(response).rejects.toMatchObject({ kind: 'protocol', retryable: false, message: expect.stringContaining('stream byte limit') })
+    expect(snapshot()).toEqual({ read: 43, canceled: true, locked: false })
+  })
+
+  it('rejects a growing half-line before the upstream sends a newline or closes', async () => {
+    const half = 'x'.repeat(256 * KiB)
+    const { response, snapshot } = generate(['data: ', half, half, half, half, half, end])
+    await expect(response).rejects.toMatchObject({ kind: 'protocol', message: expect.stringContaining('line size limit') })
+    expect(snapshot()).toEqual({ read: 5, canceled: true, locked: false })
+  })
+
+  it('rejects the accumulated size of a multiline event before parsing it', async () => {
+    const part = 'data: ' + ' '.repeat(256 * KiB) + '\r\n'
+    const { response, snapshot } = generate([part, part, part, part, '\r\n', end])
+    await expect(response).rejects.toMatchObject({ kind: 'protocol', message: expect.stringContaining('event size limit') })
+    expect(snapshot()).toEqual({ read: 4, canceled: true, locked: false })
+  })
+
+  it('rejects a whole turn when one tool accumulates oversized arguments across valid events', async () => {
+    const part = toolFrame('x'.repeat(128 * KiB))
+    const { response, snapshot } = generate([textFrame('partial reply'), part, part, toolFrame('x'), end])
+    await expect(response).rejects.toMatchObject({ kind: 'protocol', message: expect.stringContaining('tool argument size limit') })
+    expect(snapshot()).toEqual({ read: 4, canceled: true, locked: false })
+  })
+
+  it('preserves a large legal turn, CRLF across chunks, and the exact tool argument boundary', async () => {
+    const frame = textFrame('汉'.repeat(200 * KiB))
+    const part = 'x'.repeat(128 * KiB - 1)
+    const { response, snapshot } = generate([frame.slice(0, -3), frame.slice(-3), toolFrame('"' + part), toolFrame(part + '"'), end])
+    const result = await response
+    expect(result.text).toBe('汉'.repeat(200 * KiB))
+    expect(result.toolCalls).toEqual([{ id: 'call_1', name: 'ordin_list_tickets', arguments: '"' + part + part + '"' }])
+    expect(result.finishReason).toBe('tool_calls')
+    expect(snapshot()).toEqual({ read: 5, canceled: false, locked: false })
+  })
+})
+
 // ── 正常路径 ─────────────────────────────────────────────────────────────────
 
 describe('正常生成', () => {

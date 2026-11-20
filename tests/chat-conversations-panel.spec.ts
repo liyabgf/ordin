@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { runInNewContext } from 'node:vm'
 import { describe, expect, it } from 'vitest'
 
@@ -16,6 +17,7 @@ class Node {
   replaceChildren(...n: Node[]) { this.children = n; this.ownText = '' }
   setAttribute(k: string,v: string) { this.attrs[k] = String(v) }
   addEventListener(k: string,f: Function) { this.listeners[k] = f }
+  click() { void this.event('click') }
   focus() {}
   async event(k: string, event: any = {}) { if (!this.disabled) await this.listeners[k]?.({preventDefault(){},...event}) }
 }
@@ -24,17 +26,18 @@ const conversation = (id: string, title=id) => ({id,title,revision:1,profileId:'
 function fixture(initial = [conversation('panel-default'),conversation('b')], storage = new Map<string,string>(), query = '') {
   const nodes: Record<string,Node> = {}
   for (const m of html.matchAll(/<([a-z]+)[^>]*id="([^"]+)"[^>]*>([^<]*)/g)) { const n=nodes[m[2]!] = new Node(m[1]!); n.textContent=m[3]!; n.hidden=/\bhidden\b/.test(m[0]!.split('>')[0]!); }
-  for (const id of ['conversation-new','conversation-list','conversation-title','conversation-rename','conversation-archive','conversation-delete','conversation-error','history-older','history-retry','task-id','continue-task']) expect(nodes[id], 'required control '+id).toBeDefined()
+  for (const id of ['conversation-new','conversation-list','conversation-title','conversation-title-input','conversation-rename','conversation-archive','conversation-delete','conversation-error','history-older','history-retry','task-id','continue-task']) expect(nodes[id], 'required control '+id).toBeDefined()
   let rows: any[] = structuredClone(initial), fail = '', defer = false, deferHistory = false, deferContinue = false, deferList = false, continueFailure = ''
   let release: ((v: any)=>void) | undefined, releaseHistory: ((v: any)=>void) | undefined, releaseContinue: ((v: any)=>void) | undefined, releaseList: ((v: any)=>void) | undefined
   const histories: Record<string,any[]> = Object.fromEntries(initial.map(c=>[c.id,[{id:c.id+'-1',role:'ordin',content:'history '+c.id}]]))
+  let actionResponse: (id: string) => any = () => ({ok:false,status:404,json:async()=>({error:'not found'})})
   const calls: {path:string,method:string,body:any}[] = []
   const messages: any[]=[]; let messageResponse: any = null, loseNextMessageResponse = false
   const ok = (body: any) => ({ok:true,status:200,json:async()=>structuredClone(body)})
   const fetch = async (url: string,init: any = {}) => {
     const path = url.replace('/ordin/api/',''), method = init.method || 'GET', body = init.body ? JSON.parse(init.body) : undefined
     calls.push({path,method,body}); expect(init.headers['x-ordin-request']).toBe('1')
-    if (path==='model/config') return ok({models:['model-a'],defaultModel:'model-a',configuredKey:true})
+    if (path==='model/config') return ok({models:['model-a'],defaultModel:'model-a',configuration:'ready',credential:'not_required',modelCheck:{state:'unknown'}})
     if (path==='execution/status') return {ok:false,status:501,json:async()=>({error:'not wired'})}
     if (fail) return {ok:false,status:503,json:async()=>({error:fail})}
     if (path.startsWith('conversations?')) { if (deferList) { deferList=false; return new Promise<any>(r=>{releaseList=r}) }; return ok({conversations:rows}) }
@@ -46,6 +49,7 @@ function fixture(initial = [conversation('panel-default'),conversation('b')], st
     }
     const [_,encoded,actionQuery] = path.split('/'), id=decodeURIComponent(encoded!), action=actionQuery?.split('?')[0]
     const current=rows.find(c=>c.id===id); expect(current,'existing target '+id).toBeDefined()
+    if (action==='actions') return actionResponse(decodeURIComponent(path.split('/')[3]!))
     if (action==='messages') {
       if (deferHistory) { deferHistory=false;return new Promise<any>(r=>{releaseHistory=r}) }
       if (path.includes('before=')) return ok({messages:[{id:'older',role:'user',content:'older '+id}]})
@@ -66,10 +70,11 @@ function fixture(initial = [conversation('panel-default'),conversation('b')], st
     current.revision++;return ok({conversation:current})
   }
   runInNewContext(html.split("<script>")[1]!.split("</script>")[0]!, {
-    document:{getElementById:(id: string)=>nodes[id],createElement:(tag: string)=>new Node(tag),body:{scrollHeight:0}},
+    document:{getElementById:(id: string)=>nodes[id],createElement:(tag: string)=>new Node(tag),body:{scrollHeight:0}}, crypto:{randomUUID},
     URLSearchParams, window:{location:{search:query,origin:'http://ordin.test'},history:{replaceState(_state:any,_title:string,url:string){ query=url }},parent:{postMessage:(body:any,origin:string)=>{expect(origin).toBe('http://ordin.test');messages.push(body)}},addEventListener(){},scrollTo(){},confirm:()=>true},localStorage:{getItem:(k:string)=>storage.get(k)??null,setItem:(k:string,v:string)=>storage.set(k,v),removeItem:(k:string)=>storage.delete(k)},fetch,
   })
   return {nodes,calls,storage,settle,messages,query:()=>query,respondMessage:(v:any)=>{messageResponse=v},loseMessageResponse:()=>{loseNextMessageResponse=true},rows:()=>rows,fail:(s:string)=>{fail=s},defer:()=>{defer=true},deferHistory:()=>{deferHistory=true},
+    respondAction: (status: number, receipt?: object) => { actionResponse = id => status === 200 ? ok({receipt:{id,...receipt}}) : {ok:false,status,json:async()=>({error:'receipt unavailable'})} },
     release:(reply='OLD RESPONSE')=>release!(ok({reply})),releaseHistory:()=>releaseHistory!(ok({messages:[{content:'OLD HISTORY'}]})),releaseContinue:(id='late-task')=>{const c=conversation(id,'接续任务');rows.push(c);histories[c.id]=[];releaseContinue!(ok({conversation:c}))},deferContinue:()=>{deferContinue=true},deferList:()=>{deferList=true},releaseList:()=>releaseList!(ok({conversations:rows})),continueFailure:(s:string)=>{continueFailure=s},
     select:async(id:string)=>{const b=nodes['conversation-list']!.children.find(n=>n.attrs['data-id']===id);expect(b).toBeDefined();await b!.event('click')},
     type:async(text:string)=>{nodes.input!.value=text;await nodes.input!.event('input')},
@@ -99,6 +104,14 @@ describe('conversation panel actual script (minimal DOM, no browser)',()=>{
     await f.nodes['conversation-archive']!.event('click');expect(f.rows()[0].archivedAt).toBeUndefined();expect(f.nodes.send!.disabled).toBe(false)
     await f.nodes['conversation-delete']!.event('click');expect(f.rows().map(c=>c.id)).toEqual(['b']);expect(f.nodes.log!.textContent).toContain('history b')
     expect(f.calls.filter(c=>['PATCH','DELETE'].includes(c.method)||/archive|restore/.test(c.path)).map(c=>c.body.expectedRevision)).toEqual([1,2,3,4])
+  })
+  it('does not save a title while an IME composition is active', async()=>{
+    const f=fixture();await f.settle();await f.nodes['conversation-rename']!.event('click');
+    f.nodes['conversation-title-input']!.value='新标题';
+    await f.nodes['conversation-title-input']!.event('keydown',{key:'Enter',isComposing:true,keyCode:229});
+    expect(f.calls.some(c=>c.method==='PATCH')).toBe(false);
+    await f.nodes['conversation-title-input']!.event('keydown',{key:'Enter',isComposing:false,keyCode:13});
+    expect(f.calls.some(c=>c.method==='PATCH')).toBe(true);
   })
   it('preserves exact per-conversation drafts across selection and reload',async()=>{
     const f=fixture();await f.settle();await f.type(' A\n draft ');await f.select('b');expect(f.nodes.input!.value).toBe('')
@@ -177,7 +190,7 @@ describe('conversation panel actual script (minimal DOM, no browser)',()=>{
     await f.type(' 交办草稿 ')
     await f.nodes.send!.event('click')
     expect(f.calls.filter(c=>c.method==='POST')).toEqual([
-      {path:'conversations/panel-default/message',method:'POST',body:{text:'交办草稿',assetRefs:[ref]}},
+      expect.objectContaining({path:'conversations/panel-default/message',method:'POST',body:{text:'交办草稿',assetRefs:[ref],actionId:expect.any(String)}}),
     ])
     expect(f.nodes['asset-chips']!.textContent).toContain('参考资料 · r3')
     expect(JSON.parse(f.storage.get(key)!)).toEqual({ 'panel-default':[asset] })
@@ -191,7 +204,10 @@ describe('conversation panel actual script (minimal DOM, no browser)',()=>{
     expect(f.nodes.input!.value).toBe(' exact draft\n ');expect(f.nodes['send-recovery']!.hidden).toBe(false);expect(f.nodes['send-feedback']!.textContent).toContain('发送结果未知');
     const beforeCheck = f.calls.length
     await f.nodes['send-retry']!.event('click')
-    expect(f.calls.slice(beforeCheck)).toEqual([{path:'conversations/panel-default/messages?limit=50',method:'GET',body:undefined}])
+    expect(f.calls.slice(beforeCheck)).toEqual([
+      {path:'conversations/panel-default/messages?limit=50',method:'GET',body:undefined},
+      expect.objectContaining({path:expect.stringMatching(/^conversations\/panel-default\/actions\//),method:'GET',body:undefined}),
+    ])
     expect(f.nodes.log!.textContent).toBe('history panel-defaultexact draft')
     expect(f.nodes.input!.value).toBe(' exact draft\n ')
     expect(f.calls.filter(c=>c.path.endsWith('/message'))).toHaveLength(1)
@@ -199,6 +215,23 @@ describe('conversation panel actual script (minimal DOM, no browser)',()=>{
     await g.type('please create a task');await g.nodes.send!.event('click');
     expect(g.nodes['send-feedback']!.textContent).toContain('No executor');expect(g.nodes.input!.value).toBe('please create a task');expect(g.nodes['send-retry']!.hidden).toBe(false);expect(g.nodes['send-feedback']!.textContent).toContain('先查看任务工作台核对');expect(g.calls.filter(c=>c.path.endsWith('/message'))).toHaveLength(1);
   });
+  it('locks replays while the original action is pending or unreadable, and retains drafts after a task rejection',async()=>{
+    const f=fixture();await f.settle();await f.type('retained draft');f.loseMessageResponse();await f.nodes.send!.event('click')
+    expect(f.nodes['resend-action']!.hidden).toBe(false)
+    for (const [status, receipt, message] of [
+      [503, undefined, '无法读取原请求回执'],
+      [200, {state:'received'}, '还没有终局回执'],
+      [200, {state:'finished',taskError:'No executor'}, 'No executor'],
+    ] as const) {
+      f.respondAction(status, receipt);await f.nodes['send-retry']!.event('click')
+      expect(f.nodes['resend-action']!.hidden).toBe(true)
+      expect(f.nodes['send-feedback']!.textContent).toContain(message)
+      expect(f.nodes.input!.value).toBe('retained draft')
+      expect(f.nodes.send!.disabled).toBe(!receipt || receipt.state === 'received')
+    }
+    expect(f.calls.filter(c=>c.method==='POST')).toHaveLength(1)
+    expect(JSON.parse(f.storage.get('ordin.chat.actionIds')!)).toEqual({})
+  })
   it('only continues tasks explicitly requested by URL, consumes URL and selects conversation links',async()=>{
     const f=fixture(undefined,undefined,'?task=T-explicit');await f.settle();await f.settle();
     expect(f.calls.filter(c=>c.path==='conversations/from-task')).toHaveLength(1);

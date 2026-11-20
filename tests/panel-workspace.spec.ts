@@ -17,19 +17,20 @@ class Element {
 const waiting = { id: 't-wait', title: 'Plan a launch', stage: 'waiting', waitsForPerson: true, waitingForAnswer: true, question: 'Which audience?', summary: 'Draft is ready', currentNextStep: 'Waiting for your answer', assignments: [], notes: [], inputs: [] }
 const failed = { id: 't-fail', title: 'Repair import', stage: 'failed', waitsForPerson: true, preparationFailed: true, summary: 'Import failed', assignments: [], notes: [], inputs: [] }
 const completed = { id: 't-done', title: 'Write report', stage: 'done', waitsForPerson: false, ended: { outcome: 'done' }, result: { text: 'A report was produced' }, assignments: [], notes: [], inputs: [] }
+const stopped = { id: 't-stopped', title: 'Stopped task', stage: 'stopped', waitsForPerson: false, ended: { outcome: 'stopped' }, assignments: [], notes: [], inputs: [] }
 const response = (value: any, ok = true) => ({ ok, status: ok ? 200 : 503, json: async () => value })
 function fixture(search = '?ticket=t-wait') {
   const nodes: Record<string, Element> = {}
   const get = (id: string) => nodes[id] || (nodes[id] = new Element())
   const tabs = ['all', 'open', 'attention', 'ended'].map(value => { const e = new Element(); e.dataset.state = value; return e })
   get('tabs').children = tabs
-  const tickets: any[] = [structuredClone(waiting), structuredClone(failed), structuredClone(completed)]
+  const tickets: any[] = [structuredClone(waiting), structuredClone(failed), structuredClone(completed), structuredClone(stopped)]
   const events: Record<string, any[]> = {}; const progress: Record<string, any> = {}; const calls: any[] = []; const timers = new Map<number,()=>void>(); let timerId=0
   let deferredFiles: Promise<any> | null = null; const fileLists: Record<string, any[]> = {};
   let listError = false; let postError = false; let deferredList: Promise<any> | null = null; let deferredDetail: Promise<any> | null = null; let deferredPost: Promise<any> | null = null
   const fetch = vi.fn(async (url: string, options: any) => {
     calls.push([url, options]); const path = url.replace('/ordin/api/', '')
-    if (path === 'model/config') return response({ configuredKey: false, defaultModel: 'small-model' })
+    if (path === 'model/config') return response({ configuration: 'ready', credential: 'not_required', defaultModel: 'small-model', modelCheck: { state: 'unknown' } })
     if (path === 'execution/status') return response({ selected: 'codex', health: null })
     if (path.startsWith('assets?')) return response({assets:[{id:'ref-one',name:'Dataset',managed:true,status:'active',revision:2,contentHash:'a'.repeat(64)}]});
     if (path.startsWith('tickets?')) { if (deferredList) { const p = deferredList; deferredList = null; return p } return response(listError ? { error: 'list offline' } : { tickets }, !listError) }
@@ -149,6 +150,12 @@ describe('friendly workspace actual JavaScript', () => {
     f.nodes.search.value = ''; f.nodes.search.oninput!(); f.tabs[1].onclick!(); expect(titles(f)).not.toContain('Write report'); expect(titles(f)).toContain('Plan a launch');
     f.tabs[2].onclick!(); expect(titles(f)).toContain('Repair import'); f.tabs[3].onclick!(); expect(titles(f)).toContain('Write report'); expect(titles(f)).not.toContain('Plan a launch');
     f.tabs[0].onclick!(); await f.nodes.list.children[2].onclick!(); expect(f.nodes.detail.innerHTML).toContain('A report was produced'); expect(f.nodes.detail.innerHTML).toContain('验收状态以任务结果/详情为准'); expect(f.nodes.retry.hidden).toBe(true); expect(f.nodes.retry.disabled).toBe(true)
+  })
+  it('lists a stopped terminal ticket under ended with a truthful status label', async () => {
+    const f = fixture(); await f.workspace.init(); f.tabs[3].onclick!()
+    const card = f.nodes.list.children.find(c => c.dataset.id === 't-stopped')
+    expect(card?.innerHTML).toContain('已结束（停止）'); expect(card?.innerHTML).not.toContain('停止状态待确认')
+    await f.workspace.select('t-stopped'); expect(f.nodes.detail.innerHTML).toContain('停止请求已排队，等待执行端确认')
   })
   it('does not claim verification for stage done without acceptance, and only accepts explicit acceptance', async () => {
     const f = fixture('?ticket=t-done'); await f.workspace.init(); expect(f.nodes.detail.innerHTML).toContain('验收状态以任务结果/详情为准'); expect(f.nodes.detail.innerHTML).not.toContain('验收已通过');

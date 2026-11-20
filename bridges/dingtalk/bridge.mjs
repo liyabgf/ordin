@@ -146,13 +146,6 @@ const outbound = async ({ thread, text, name }) => {
   log.info('reply-sent', { name, thread: thread ?? null, chars: text.length })
 }
 
-const sendOutboundFile = async ({ thread, filePath }) => {
-  // sessionWebhook accepts a text/markdown body only; files need the platform's upload API, which this first
-  // version does not carry. Saying so is better than a silent no-op: the error lands in the bridge log where the
-  // operator can see it, and the file stays in out/ rather than disappearing.
-  throw new Error(`file delivery is not implemented for DingTalk yet (${basename(filePath)} stays queued) — replies still arrive as text`)
-}
-
 const recordSentReceipt = async () => {
   // Receipt ledger (sentMessages → replyToTicket) arrives with the first live traffic: the platform's reply
   // carries no message id we can key on until one is observed. Refusing to invent the shape now is the honest move.
@@ -166,7 +159,7 @@ const startOutboundLoop = () => {
     inFlight = true
     try {
       await touchHeartbeat()
-      await drainOut({ directory, send: outbound, sendFile: sendOutboundFile, onSent: recordSentReceipt, log, keepDays, limit: MESSAGE_LIMIT })
+    await drainOut({ directory, send: outbound, onSent: recordSentReceipt, log, keepDays, limit: MESSAGE_LIMIT })
     } catch (error) {
       log.error('outbound-failed', { error: String(error?.message ?? error) })
     } finally {

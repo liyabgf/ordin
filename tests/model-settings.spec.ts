@@ -23,7 +23,13 @@ it('persists private model credentials and exercises draft SSE/models without hi
     res.setHeader('content-type', 'text/event-stream')
     res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: 'OK' }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n')
   })
-  await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve))
+  await new Promise<void>((resolve, reject) => {
+    upstream.once('error', reject)
+    upstream.listen(0, '127.0.0.1', () => {
+      upstream.off('error', reject)
+      resolve()
+    })
+  })
   const address = upstream.address() as { port: number }
   const config = resolveConfig({ stateDir, workRoot: join(stateDir, 'work'), inboxDir: join(stateDir, 'inbox'), port: 0 })
   const logger = silentLogger()
@@ -36,10 +42,16 @@ it('persists private model credentials and exercises draft SSE/models without hi
     const base = runtime.status().panel + 'api/model/'
     const request = (path: string, method = 'GET', body?: unknown) => fetch(base + path, { method, headers: { 'x-ordin-request': '1', 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
     const draft = { baseUrl: 'http://127.0.0.1:' + address.port + '/v1', model: 'test-model', provider: 'OpenAI compatible', temperature: 0.2, maxTokens: 512, apiKeyEnv: envName }
-    expect(await (await request('config')).json()).toEqual({ configuredKey: false, localKey: false, envKey: false, models: [], defaultModel: '' })
+    expect(await (await request('config')).json()).toEqual({ configuredKey: false, localKey: false, envKey: false, models: [], defaultModel: '', configuration: 'incomplete', credential: 'not_required', modelCheck: { state: 'unknown' } })
+    const configStatus = async () => (await request('config')).json()
+    const noKey = { ...draft, apiKeyEnv: '' }
+    expect(await (await request('config', 'PUT', noKey)).json()).toMatchObject({ configuration: 'ready', credential: 'not_required', modelCheck: { state: 'unknown' } })
+    expect((await request('test', 'POST', noKey)).status).toBe(200)
+    expect(seen.at(-1)!.key).toBeUndefined()
+    expect(await configStatus()).toMatchObject({ modelCheck: { state: 'passed' } })
     expect((await fetch(base + 'config', { method: 'PUT', body: JSON.stringify(draft) })).status).toBe(403)
     const before = runtime.settings().executor
-    expect(await (await request('config', 'PUT', { ...draft, apiKey: 'local-test-key' })).json()).toEqual({ configuredKey: true, localKey: true, envKey: true, models: ['test-model'], defaultModel: 'test-model' })
+    expect(await (await request('config', 'PUT', { ...draft, apiKey: 'local-test-key' })).json()).toEqual({ configuredKey: true, localKey: true, envKey: true, models: ['test-model'], defaultModel: 'test-model', configuration: 'ready', credential: 'available', modelCheck: { state: 'unknown' } })
     expect(runtime.settings().executor).toEqual(before)
     const credential = join(stateDir, 'model-credentials.json')
     expect((await stat(credential)).mode & 0o777).toBe(0o600)
@@ -70,10 +82,12 @@ it('persists private model credentials and exercises draft SSE/models without hi
     expect(await (await request('test', 'POST', draft)).json()).toEqual({ ok: true, model: 'test-model' })
     expect(seen.at(-1)).toMatchObject({ url: '/v1/chat/completions', key: 'Bearer local-test-key', body: { stream: true, max_tokens: 32 } })
     expect(seen.at(-1)!.body.tools).toBeUndefined()
+    expect(await configStatus()).toMatchObject({ modelCheck: { state: 'passed', model: 'test-model', checkedAt: expect.any(String) } })
     expect(await (await request('models', 'POST', { baseUrl: draft.baseUrl })).json()).toEqual({ models: ['test-model', 'other-model'] })
     expect(seen.at(-1)!.key).toBe('Bearer local-test-key')
     expect(await (await request('test', 'POST', { ...draft, apiKey: 'draft-test-key' })).json()).toEqual({ ok: true, model: 'test-model' })
     expect(seen.at(-1)!.key).toBe('Bearer draft-test-key')
+    expect(await configStatus()).toMatchObject({ modelCheck: { state: 'passed', model: 'test-model' } })
     expect(runtime.store.settingsRevision()).toBe(revision)
     expect(runtime.store.deskHistory.latestSeq()).toBe(seq)
     expect(runtime.conversationMessages('probe')).toEqual([])
@@ -81,6 +95,9 @@ it('persists private model credentials and exercises draft SSE/models without hi
     const failure = await request('test', 'POST', { ...draft, apiKey: 'draft-secret-echo' })
     expect(failure.status).toBe(400)
     expect(await failure.text()).not.toContain('draft-secret-echo')
+    expect(await configStatus()).toMatchObject({ modelCheck: { state: 'passed', model: 'test-model' } })
+    expect((await request('test', 'POST', draft)).status).toBe(400)
+    expect(await configStatus()).toMatchObject({ modelCheck: { state: 'failed', model: 'test-model' } })
     const modelFailure = await request('models', 'POST', { baseUrl: draft.baseUrl, apiKey: 'draft-secret-echo' })
     expect(modelFailure.status).toBe(400)
     expect(await modelFailure.text()).not.toContain('draft-secret-echo')
@@ -91,10 +108,28 @@ it('persists private model credentials and exercises draft SSE/models without hi
     }
     expect(seen.length).toBe(count)
     reject = false
-    expect(await (await request('config', 'PUT', { ...draft, clearApiKey: true })).json()).toEqual({ configuredKey: true, localKey: false, envKey: true, models: ['test-model', 'other-model'], defaultModel: 'test-model' })
+    expect(await (await request('config', 'PUT', { ...draft, clearApiKey: true })).json()).toEqual({ configuredKey: true, localKey: false, envKey: true, models: ['test-model', 'other-model'], defaultModel: 'test-model', configuration: 'ready', credential: 'available', modelCheck: { state: 'unknown' } })
     await request('test', 'POST', draft)
     expect(seen.at(-1)!.key).toBe('Bearer environment-test-key')
     expect(await readdir(stateDir)).not.toContain('model-credentials.json')
+    expect(await configStatus()).toMatchObject({ modelCheck: { state: 'passed' } })
+    for (const change of [{ baseUrl: draft.baseUrl + '/changed' }, { model: 'other-model' }]) {
+      const changed = await request('config', 'PUT', { ...draft, ...change })
+      expect(changed.status).toBe(200)
+      expect(await changed.json()).toMatchObject({ modelCheck: { state: 'unknown' } })
+      expect(await (await request('config', 'PUT', draft)).json()).toMatchObject({ modelCheck: { state: 'unknown' } })
+      expect((await request('test', 'POST', draft)).status).toBe(200)
+      expect(await (await request('config')).json()).toMatchObject({ modelCheck: { state: 'passed', model: 'test-model' } })
+    }
+    delete process.env[envName]
+    expect(await configStatus()).toMatchObject({ credential: 'missing_named_env', modelCheck: { state: 'unknown' } })
+    process.env[envName] = 'invalid\nkey'
+    expect(await configStatus()).toMatchObject({ credential: 'invalid', modelCheck: { state: 'unknown' } })
+    process.env[envName] = 'environment-test-key'
+    runtime.saveSettings({ ...runtime.settings(), deskLlm: { ...runtime.settings().deskLlm, baseUrl: draft.baseUrl + '/generic-save' } })
+    expect(await configStatus()).toMatchObject({ modelCheck: { state: 'unknown' } })
+    const publicStatus = JSON.stringify(await configStatus())
+    expect(publicStatus).not.toMatch(/environment-test-key|local-test-key|invalid\\nkey/)
     expect(JSON.stringify(runtime.settings())).not.toContain('local-test-key')
     for (const file of await readdir(stateDir)) {
       if (file.includes('sqlite') || file.endsWith('.log')) {

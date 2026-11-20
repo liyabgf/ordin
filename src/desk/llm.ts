@@ -228,12 +228,19 @@ interface ToolCallAccumulator {
   arguments: string
 }
 
+// Bound wire bytes separately from decoded data retained by the parser.
+const MAX_STREAM_BYTES = 8 * 1024 * 1024
+const MAX_EVENT_UNITS = 1024 * 1024
+const MAX_TOOL_ARGUMENT_UNITS = 256 * 1024
+
 /** 消费整个 SSE body，返回完整 assistant turn。 */
 async function consumeEventStream(body: ReadableStream<Uint8Array>): Promise<DeskLlmResponse> {
   const reader = body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
   let dataLines: string[] = []
+  let eventUnits = 0
+  let streamBytes = 0
   let text = ''
   const calls = new Map<number, ToolCallAccumulator>()
   let finishReason: string | undefined
@@ -242,6 +249,7 @@ async function consumeEventStream(body: ReadableStream<Uint8Array>): Promise<Des
   const handleEvent = (): void => {
     const payload = dataLines.join('\n')
     dataLines = []
+    eventUnits = 0
     if (payload === '') return
     if (payload === '[DONE]') { sawDone = true; return }
     let chunk: unknown
@@ -256,7 +264,12 @@ async function consumeEventStream(body: ReadableStream<Uint8Array>): Promise<Des
         const acc = calls.get(delta.index) ?? { index: delta.index, id: '', name: '', arguments: '' }
         if (delta.id !== undefined) acc.id = delta.id
         if (delta.name !== undefined) acc.name = delta.name
-        if (delta.arguments !== undefined) acc.arguments += delta.arguments
+        if (delta.arguments !== undefined) {
+          if (acc.arguments.length + delta.arguments.length > MAX_TOOL_ARGUMENT_UNITS) {
+            throw new DeskLlmError('protocol', 'LLM tool argument size limit exceeded (256 Ki UTF-16 units).')
+          }
+          acc.arguments += delta.arguments
+        }
         calls.set(delta.index, acc)
       },
       setFinish: reason => { finishReason = reason },
@@ -264,11 +277,19 @@ async function consumeEventStream(body: ReadableStream<Uint8Array>): Promise<Des
   }
 
   const handleLine = (rawLine: string): void => {
+    if (rawLine.length > MAX_EVENT_UNITS) {
+      throw new DeskLlmError('protocol', 'LLM SSE line size limit exceeded (1 Mi UTF-16 units).')
+    }
     const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine
     if (line === '') { handleEvent(); return } // 空行 = 事件边界
     if (line.startsWith(':')) return            // SSE 注释 / keep-alive
     if (line.startsWith('data:')) {
-      dataLines.push(line.startsWith('data: ') ? line.slice(6) : line.slice(5))
+      const data = line.startsWith('data: ') ? line.slice(6) : line.slice(5)
+      eventUnits += data.length + (dataLines.length === 0 ? 0 : 1)
+      if (eventUnits > MAX_EVENT_UNITS) {
+        throw new DeskLlmError('protocol', 'LLM SSE event size limit exceeded (1 Mi UTF-16 units).')
+      }
+      dataLines.push(data)
     }
     // event:/id:/retry:/未知字段按 SSE 规范忽略（宽容解析，纪律 3.3）。
   }
@@ -277,16 +298,27 @@ async function consumeEventStream(body: ReadableStream<Uint8Array>): Promise<Des
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
+      streamBytes += value.byteLength
+      if (streamBytes > MAX_STREAM_BYTES) {
+        throw new DeskLlmError('protocol', 'LLM stream byte limit exceeded (8 MiB).')
+      }
       buffer += decoder.decode(value, { stream: true })
       let newline: number
       while ((newline = buffer.indexOf('\n')) >= 0) {
         handleLine(buffer.slice(0, newline))
         buffer = buffer.slice(newline + 1)
       }
+      if (buffer.length > MAX_EVENT_UNITS) {
+        throw new DeskLlmError('protocol', 'LLM SSE line size limit exceeded (1 Mi UTF-16 units).')
+      }
     }
     buffer += decoder.decode() // flush
     if (buffer !== '') handleLine(buffer)
     handleEvent()              // 流尾若没有结尾空行，仍派发最后一个事件
+  } catch (error) {
+    // Stop pulling on parser failure. A stalled transport's cancellation must not delay the error.
+    void reader.cancel().catch(() => {})
+    throw error
   } finally {
     reader.releaseLock()
   }

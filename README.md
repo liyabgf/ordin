@@ -17,7 +17,7 @@ Ordin 是一个本地任务协调器。你可以先在对话里讨论想法，�
 - **查看投递状态：** 草稿已选、已保存待投递、已送达、任务结束前未送达是不同状态。资产可用状态和任务验收状态也分别记录。
 - **整理工作与接入来源。** 除任务工作台外，还可直接创建任务、设置定时任务、查看工作、项目和记录。系统也支持收件目录、API、规则和单独配置的聊天桥。[聊天桥配置](bridges/README.md)
 - **管理记忆与技能。** 候选记忆须经用户确认。支持为任务选择启用的技能及固定版本。
-- **本机运行：** 未配置执行端时仍可启动面板。受保护的离线命令可备份和恢复 SQLite 数据库。
+- **本机运行：** 未配置执行端时仍可启动面板。可离线备份和恢复 SQLite 数据与托管资产正文。
 
 ## 启动
 
@@ -76,7 +76,7 @@ node --experimental-transform-types src/index.ts storage backup --state-dir /abs
 node --experimental-transform-types src/index.ts storage restore --state-dir /absolute/path/to/state --input /absolute/path/to/ordin.sqlite3
 ```
 
-维护命令只处理 SQLite 数据库；工作文件和凭据需分别备份。若服务仍持有状态锁、输入不完整或 sidecar 不安全，恢复会拒绝执行。不要手动修改 schema version 来回滚。
+数据库引用托管对象时，请一并保存生成的同名 `.assets/` 目录。工作文件和凭据需分别备份。恢复后可用 `storage verify --state-dir <目录>` 校验数据库和托管对象。详见[恢复手册](docs/installation-and-recovery.md)。
 
 ## 当前限制
 
@@ -87,6 +87,8 @@ node --experimental-transform-types src/index.ts storage restore --state-dir /ab
 - 受控模型和执行端夹具验证应用链路，不代表模型产出质量或每种自动验收决定都正确。
 
 ## 开发检查
+
+在隔离副本运行 `bash scripts/gate.sh`。门禁串行运行类型检查与测试，打印本次独立日志路径和实际退出码。
 
 ```bash
 npm run typecheck

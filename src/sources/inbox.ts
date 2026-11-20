@@ -67,13 +67,22 @@ export function frontMatter(text: string, fallbackTitle: string): FrontMatter {
 
 const reason = (error: unknown): string => error instanceof Error ? `${error.name}: ${error.message}` : String(error)
 
-async function readdirSafe(directory: string, health?: HealthEntry): Promise<Dirent[]> {
-  try { return await readdir(directory, { withFileTypes: true }) }
+interface InboxReader {
+  readdir(directory: string): Promise<Dirent[]>
+  readFile(path: string): Promise<string>
+}
+
+const diskReader: InboxReader = {
+  readdir: async directory => await readdir(directory, { withFileTypes: true }),
+  readFile: async path => await readFile(path, 'utf8'),
+}
+
+async function readdirSafe(directory: string, reader: InboxReader): Promise<{ entries: Dirent[]; error?: string; missing: boolean }> {
+  try { return { entries: await reader.readdir(directory), missing: false } }
   catch (error) {
-    // C06 fix: an I/O error on the inbox directory is not the same as an empty inbox.
-    // Report it on the health board so the operator can see that messages are not being read.
-    health?.problem(`inbox readdir failed: ${error instanceof Error ? error.message : String(error)}`)
-    return []
+    const message = error instanceof Error ? error.message : String(error)
+    const code = typeof error === 'object' && error !== null && 'code' in error ? String((error as { code: unknown }).code) : ''
+    return { entries: [], error: message, missing: code === 'ENOENT' }
   }
 }
 
@@ -103,7 +112,7 @@ export class InboxSource implements Source {
   private readonly counts = { accepted: 0, ignored: 0, observed: 0, duplicate: 0, unhandled: 0 }
   private lastTriggerAt?: string
 
-  constructor(private readonly host: SourceHost, private readonly defaultDirectory: string) {}
+  constructor(private readonly host: SourceHost, private readonly defaultDirectory: string, private readonly reader = diskReader) {}
 
   /** The directory watched now: the settings' own value, or the deployment's default. */
   directory(): string {
@@ -205,7 +214,13 @@ export class InboxSource implements Source {
     // erased before the pass finished and the operator never saw it. That is the S19/N5 shape — chat collects issues
     // this way already, and its spec says cron and rule each shipped the bug once. inbox still had it.
     const issues: string[] = []
-    for (const entry of await readdirSafe(directory, this.health)) {
+    let readFailure = false
+    const inboxRead = await readdirSafe(directory, this.reader)
+    if (inboxRead.error) {
+      readFailure = true
+      issues.push(`Could not read inbox directory: ${inboxRead.error}`)
+    }
+    for (const entry of inboxRead.entries) {
       if (this.stopped) return
       if (!entry.isFile() || entry.name.startsWith('.') || !entry.name.toLowerCase().endsWith('.md')) continue
       const path = join(directory, entry.name)
@@ -224,8 +239,8 @@ export class InboxSource implements Source {
         continue
       }
       let text: string
-      try { text = await readFile(path, 'utf8') }
-      catch (error) { issues.push(`Could not read ${entry.name}: ${reason(error)}`); continue }
+      try { text = await this.reader.readFile(path) }
+      catch (error) { readFailure = true; issues.push(`Could not read ${entry.name}: ${reason(error)}`); continue }
       const parsed = frontMatter(text, entry.name.replace(/\.md$/i, ''))
       const at = new Date(info.mtimeMs).toISOString()
       const trigger: Trigger = {
@@ -273,16 +288,23 @@ export class InboxSource implements Source {
     // The backlog, not the event: how many requests are parked in `unhandled/` right now. Recomputed every pass, so a
     // quiet pass cannot erase it and it retires on its own once a person deals with the files.
     const parked = join(directory, TAKEN.unhandled)
-    const backlog = await readdirSafe(parked).then(entries => entries.filter(e => e.isFile()).length)
+    const parkedRead = await readdirSafe(parked, this.reader)
+    if (parkedRead.error && !parkedRead.missing) {
+      readFailure = true
+      issues.push(`Could not read ${TAKEN.unhandled}/: ${parkedRead.error}`)
+    }
+    const backlog = parkedRead.entries.filter(e => e.isFile()).length
     if (backlog > 0) {
       issues.push(`${backlog} request(s) are parked in ${TAKEN.unhandled}/ because their disposition was not a state `
         + 'this Source handles; nothing was executed for them, and each file says why')
     }
-    const detail = settling > 0 ? `${settling} file(s) still settling` : undefined
+    const detailParts = [...issues]
+    if (settling > 0) detailParts.push(`${settling} file(s) still settling`)
+    const detail = detailParts.length > 0 ? detailParts.join('; ') : undefined
     // One decision at the end of the pass, not a `problem()` mid-pass that this line would overwrite.
     if (issues.length > 0) this.health.problem(issues.join('; '))
     else this.health.record(detail)
-    this.last = { ok: true, detail, lastTriggerAt: this.lastTriggerAt, counts: { ...this.counts } }
+    this.last = { ok: !readFailure, detail, lastTriggerAt: this.lastTriggerAt, counts: { ...this.counts } }
   }
 
   /**

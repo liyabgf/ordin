@@ -131,7 +131,8 @@ export function ticketView(ticket: Ticket): Record<string, unknown> {
  * so a machine in another zone is visible rather than silently wrong.
  * @param from the instant to compute from, in epoch milliseconds.
  */
-export function scheduleView(schedule: Schedule, from: number, zone = localZone()): Record<string, unknown> {
+export function scheduleView(schedule: Schedule, from: number, zone = localZone(), globalBudgetMs = 0): Record<string, unknown> {
+  const effectiveBudgetMs = schedule.maxRuntimeMs > 0 ? schedule.maxRuntimeMs : Math.max(0, globalBudgetMs)
   const next = schedule.enabled ? nextRun(schedule.timing, new Date(from)) : undefined
   return {
     id: schedule.id, name: schedule.name, enabled: schedule.enabled,
@@ -155,9 +156,11 @@ export function scheduleView(schedule: Schedule, from: number, zone = localZone(
     presetText: schedule.preset === 'researcher'
       ? '研究型 worker（无 shell：不能执行、安装或运行任何东西）'
       : '标准 worker（含 shell）',
-    budgetText: schedule.maxRuntimeMs > 0
-      ? `墙钟预算 ${Math.round(schedule.maxRuntimeMs / 60000)} 分钟（到点先提醒收尾，再过 10 分钟仍未结束就停下并交给人）`
-      : '无墙钟预算（跑多久都行）',
+    effectiveBudgetMs,
+    budgetSource: schedule.maxRuntimeMs > 0 ? 'schedule' : effectiveBudgetMs > 0 ? 'global' : 'none',
+    budgetText: effectiveBudgetMs > 0
+      ? `${schedule.maxRuntimeMs > 0 ? '' : '继承全局设置：'}墙钟上限 ${Math.round(effectiveBudgetMs / 60000)} 分钟（到点通知操作者，再过 10 分钟仍无终局就停下；包括验收用时）`
+      : '未设置墙钟上限（模型估时只提醒，不会自动停下）',
     ...(schedule.deliverTo === undefined
       ? { deliverToText: '只落 RESULT.md 与主会话通知（不进聊天室）' }
       : {

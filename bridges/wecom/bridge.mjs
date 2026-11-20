@@ -221,10 +221,6 @@ const outbound = async ({ thread, text, name }) => {
   return body.msgid === undefined ? undefined : { messageId: String(body.msgid) }
 }
 
-const sendOutboundFile = async ({ thread, filePath }) => {
-  throw new Error(`file delivery is not implemented for WeCom yet (${filePath}) — replies still arrive as text`)
-}
-
 const recordSentReceipt = async () => {
   // Receipt ledger arrives with the first live traffic, as for DingTalk: no replyToTicket until a real push
   // receipt is observed. Refusing to invent the shape now is the honest move.
@@ -238,7 +234,7 @@ const startOutboundLoop = () => {
     inFlight = true
     try {
       await touchHeartbeat()
-      await drainOut({ directory, send: outbound, sendFile: sendOutboundFile, onSent: recordSentReceipt, log, keepDays, limit: MESSAGE_LIMIT })
+    await drainOut({ directory, send: outbound, onSent: recordSentReceipt, log, keepDays, limit: MESSAGE_LIMIT })
     } catch (error) {
       log.error('outbound-failed', { error: String(error?.message ?? error) })
     } finally {

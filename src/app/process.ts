@@ -74,6 +74,8 @@ export interface WaitResult {
 
 const DEFAULT_GRACE_MS = 3000
 const DEFAULT_OUTPUT_LIMIT = 1024 * 1024
+const SETTLED_HISTORY_LIMIT = 64
+const SETTLED_OUTPUT_LIMIT = 8 * 1024 * 1024
 
 type Outcome = Omit<WaitResult, 'id'>
 
@@ -108,6 +110,8 @@ interface Entry {
 export class ProcessRegistry {
   private seq = 0
   private readonly entries = new Map<string, Entry>()
+  private readonly history = new Map<string, { rec: ProcessRecord; outcome: WaitResult; bytes: number }>()
+  private historyBytes = 0
 
   /**
    * Start a process and book it. The record is returned immediately and
@@ -262,23 +266,22 @@ export class ProcessRegistry {
   }
 
   get(id: string): ProcessRecord | undefined {
-    return this.entries.get(id)?.rec
+    return this.entries.get(id)?.rec ?? this.history.get(id)?.rec
   }
 
-  /** Every booked process, or only one owner's. Returned records are live. */
+  /** Unsettled processes and recent settled history, optionally for one owner. */
   list(owner?: string): ProcessRecord[] {
-    const all = [...this.entries.values()].map((e) => e.rec)
+    const all = [...this.history.values(), ...this.entries.values()].map((e) => e.rec)
     return owner === undefined ? all : all.filter((r) => r.owner === owner)
   }
 
   /**
    * Resolves with the final outcome — including the numeric exit code when
-   * the OS reported one — and never rejects. Unknown ids resolve 'failed'.
+   * the OS reported one — and never rejects. Unknown or evicted ids resolve 'failed'.
    */
   wait(id: string): Promise<WaitResult> {
     const entry = this.entries.get(id)
-    if (!entry) return Promise.resolve({ id, exitCode: null, exitSignal: null, status: 'failed' })
-    return entry.done
+    return entry?.done ?? Promise.resolve(this.history.get(id)?.outcome ?? { id, exitCode: null, exitSignal: null, status: 'failed' })
   }
 
   /** SIGTERM the process group, then SIGKILL after the grace window. Resolves when dead. */
@@ -426,7 +429,22 @@ export class ProcessRegistry {
     rec.error = entry.spawnError ?? rec.error
     rec.endedAt = Date.now()
     entry.child = null
-    entry.resolve({ id: rec.id, exitCode: rec.exitCode, exitSignal: rec.exitSignal, status: rec.status })
+    const result = { id: rec.id, exitCode: rec.exitCode, exitSignal: rec.exitSignal, status: rec.status }
+    this.entries.delete(rec.id)
+    this.remember(rec, result)
+    entry.resolve(result)
+  }
+
+  private remember(rec: ProcessRecord, outcome: WaitResult): void {
+    const bytes = Buffer.byteLength(rec.stdout) + Buffer.byteLength(rec.stderr) + Buffer.byteLength(rec.error ?? '')
+    if (bytes > SETTLED_OUTPUT_LIMIT) return
+    this.history.set(rec.id, { rec, outcome, bytes })
+    this.historyBytes += bytes
+    for (const [id, oldest] of this.history) {
+      if (this.history.size <= SETTLED_HISTORY_LIMIT && this.historyBytes <= SETTLED_OUTPUT_LIMIT) break
+      this.history.delete(id)
+      this.historyBytes -= oldest.bytes
+    }
   }
 }
 

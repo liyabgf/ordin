@@ -18,6 +18,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import type { Dirent } from 'node:fs'
 import { lstat, readdir, readFile } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
+import { createHash } from 'node:crypto'
 import type { OrdinConfig } from './config.ts'
 import type { Logger } from './logger.ts'
 import type { Boot } from './boot.ts'
@@ -50,8 +51,10 @@ import { ruleKind } from '../sources/rule.ts'
 import { packageFile, Prompts, type PromptRole } from './prompts.ts'
 import { Uploads } from './uploads.ts'
 import { DeskLoop } from './desk-loop.ts'
-import { ModelCredentials, modelCredentialStatus, resolveModelKey, validateModelInput } from './credentials.ts'
-import { assertDefaultConversation, runCoordinatorTurn, type CoordinatorHost } from './coordinator.ts'
+import { ModelCredentials, resolveModelKey, validateModelInput } from './credentials.ts'
+import { assertDefaultConversation, readChatAction, runCoordinatorTurn, type ChatAction, type CoordinatorHost } from './coordinator.ts'
+import { createArtifactSampleReader } from './manager-artifact-reader.ts'
+import { inspectManagerHealth } from './manager-health.ts'
 import { deskLlmGenerate, type DeskLlmConfig } from '../desk/llm.ts'
 import { mainTools, workerTools, type ArtifactCatalogEntry, type ArtifactRead, type Tool, type ToolsHost } from './tools.ts'
 import { isTextFile, resolveInside, resolveRealInside } from './files.ts'
@@ -146,6 +149,7 @@ export interface Recipe {
 }
 
 export class Runtime implements HttpHost {
+  private recentModelCheck?: { fingerprint: string; state: 'passed' | 'failed'; checkedAt: string; model: string }
   readonly machine: { readonly stateDir: string; readonly workRoot: string; readonly inboxDir: string; readonly mainSessionId: string; promptMaxChars(): number; view(): Record<string, string> }
   readonly health = new HealthBoard()
   readonly context: { readonly logger: Logger }
@@ -227,7 +231,7 @@ export class Runtime implements HttpHost {
    * One conversation turn for the panel and the API: the coordinator decides, this method performs.
    * Returns every text the coordinator sent (a reply, a clarifying question, and the final answer).
    */
-  async conversationTurn(conversationId: string, userText: string, model?: string, selectedAssetRefs: readonly import('../core/model.ts').AssetRef[] = []): Promise<{ reply: string; sent: readonly string[]; toolOutcomes: readonly unknown[]; rounds: number }> {
+  async conversationTurn(conversationId: string, userText: string, model?: string, selectedAssetRefs: readonly import('../core/model.ts').AssetRef[] = [], actionId?: string): Promise<{ reply: string; sent: readonly string[]; toolOutcomes: readonly unknown[]; rounds: number }> {
     this.conversations.assertWritable(conversationId, true)
     assertDefaultConversation(this.store, conversationId, true)
     const saved = this.settings().deskLlm
@@ -237,11 +241,29 @@ export class Runtime implements HttpHost {
     const cfg = { ...saved, model: model === undefined ? (saved.scenarios.conversation || saved.model) : model.trim() }
     if (!cfg.baseUrl || !cfg.model) throw new Error('模型尚未配置：请在设置里填写服务地址与模型名称')
     const sent: string[] = []
-    const pinnedAssetRefs = selectedAssetRefs.map(ref => this.assets.resolveMetadata(ref).ref)
+    const catalog = this.assets
+    const pinnedAssetRefs = selectedAssetRefs.map(ref => catalog.resolveMetadata(ref).ref)
+    const readArtifactSample = createArtifactSampleReader({ catalog, store: this.store, workRoot: this.machine.workRoot })
     const host: CoordinatorHost = {
       skills: () => this.prompts.skills(),
-      assets: this.assets,
+      assets: catalog,
+      readArtifactSample: (ref, maxBytes) => this.runOperation(() => readArtifactSample(ref, maxBytes)),
       selectedAssetRefs: pinnedAssetRefs,
+      inspectRuntime: (id: string) => {
+        try {
+          const { selected, health } = this.executionStatus()
+          return inspectManagerHealth({
+            store: this.store,
+            selected,
+            health,
+            conversationId: id,
+            configured: this.workerConnections?.view()[selected].configured,
+          })
+        } catch {
+          throw new Error('Runtime evidence unavailable')
+        }
+      },
+      requestPass: () => this.passes.requestPass(),
       engine: this.engine,
       store: this.store,
       send: async (text: string) => { sent.push(text) },
@@ -267,12 +289,16 @@ export class Runtime implements HttpHost {
         }
       },
     }
-    const result = await runCoordinatorTurn(host, conversationId, userText, this.lifetime)
+    const result = await runCoordinatorTurn(host, conversationId, userText, this.lifetime, { ...(actionId ? { actionId } : {}) })
     return { reply: result.reply, sent, toolOutcomes: result.toolOutcomes, rounds: result.rounds }
   }
 
   /** Conversation history for the panel. */
   get conversations(): Conversations { return new Conversations(this.store) }
+
+  chatAction(conversationId: string, actionId: string): ChatAction | undefined {
+    return readChatAction(this.store, conversationId, actionId)
+  }
 
   get assets(): AssetCatalog { return new AssetCatalog(this.store, this.machine.stateDir) }
 
@@ -324,9 +350,33 @@ export class Runtime implements HttpHost {
     return { baseUrl: cfg.baseUrl, model: cfg.model, temperature: cfg.temperature, maxTokens: cfg.maxTokens, ...(apiKey === undefined ? {} : { apiKey }) }
   }
 
-  async modelConfig(): Promise<{ configuredKey: boolean; localKey: boolean; envKey: boolean; models: readonly string[]; defaultModel: string }> { const status = await modelCredentialStatus(this.machine.stateDir, this.settings().deskLlm.apiKeyEnv); return { configuredKey: status.local || status.env, localKey: status.local, envKey: status.env, models: this.settings().deskLlm.models, defaultModel: this.settings().deskLlm.model } }
+  private modelFingerprint(cfg: { baseUrl: string; model: string; apiKeyEnv: string }, key: string | undefined): string {
+    return createHash('sha256').update(JSON.stringify([cfg.baseUrl, cfg.model, cfg.apiKeyEnv, key ?? null])).digest('hex')
+  }
 
-  async saveModelConfig(value: unknown): Promise<{ configuredKey: boolean }> {
+  async modelConfig(): Promise<{ configuredKey: boolean; localKey: boolean; envKey: boolean; configuration: 'incomplete' | 'ready'; credential: 'available' | 'not_required' | 'missing_named_env' | 'invalid'; models: readonly string[]; defaultModel: string; modelCheck: { state: 'unknown' | 'passed' | 'failed'; checkedAt?: string; model?: string } }> {
+    const settings = this.settings().deskLlm
+    let localKey = false
+    const envKey = settings.apiKeyEnv !== '' && Boolean(process.env[settings.apiKeyEnv])
+    let key: string | undefined
+    let credential: 'available' | 'not_required' | 'missing_named_env' | 'invalid' = 'not_required'
+    try {
+      const credentials = await this.modelCredentials.read()
+      localKey = Boolean(credentials.apiKey)
+      key = resolveModelKey(credentials.apiKey, settings.apiKeyEnv)
+      credential = key === undefined ? 'not_required' : 'available'
+    } catch (error) {
+      credential = error instanceof Error && error.message.includes('environment variable') ? 'missing_named_env' : 'invalid'
+    }
+    const fingerprint = credential === 'available' || credential === 'not_required' ? this.modelFingerprint(settings, key) : undefined
+    const check = fingerprint !== undefined && this.recentModelCheck?.fingerprint === fingerprint ? this.recentModelCheck : undefined
+    return { configuredKey: localKey || envKey, localKey, envKey,
+      configuration: settings.baseUrl.trim() !== '' && settings.model.trim() !== '' ? 'ready' : 'incomplete', credential,
+      models: settings.models, defaultModel: settings.model,
+      modelCheck: check ? { state: check.state, checkedAt: check.checkedAt, model: check.model } : { state: 'unknown' } }
+  }
+
+  async saveModelConfig(value: unknown): ReturnType<Runtime['modelConfig']> {
     const draft = validateModelInput(value)
     const input = value as Record<string, unknown>
     const requested = input.models === undefined ? this.settings().deskLlm.models : input.models
@@ -341,9 +391,21 @@ export class Runtime implements HttpHost {
       models.push(draft.model)
     }
     const prior = await this.modelCredentials.read()
+    const nextKey = draft.clearApiKey ? undefined : draft.apiKey || prior.apiKey
+    if (prior.apiKey !== nextKey) this.recentModelCheck = undefined
     await this.saveSettings({ ...this.settings(), deskLlm: { ...this.settings().deskLlm, baseUrl: draft.baseUrl, model: draft.model, provider: draft.provider, temperature: draft.temperature, maxTokens: draft.maxTokens, apiKeyEnv: draft.apiKeyEnv, models } })
-    await this.modelCredentials.save(draft.clearApiKey ? undefined : draft.apiKey === undefined || draft.apiKey === '' ? prior.apiKey : draft.apiKey)
+    await this.modelCredentials.save(nextKey)
     return this.modelConfig()
+  }
+
+  private async recordModelCheck(fingerprint: string, model: string, state: 'passed' | 'failed'): Promise<void> {
+    let key: string | undefined
+    const local = await this.modelCredentials.read().catch(() => undefined)
+    if (local === undefined) return
+    const settings = this.settings().deskLlm
+    try { key = resolveModelKey(local.apiKey, settings.apiKeyEnv) } catch { return }
+    if (this.modelFingerprint(settings, key) !== fingerprint) return
+    this.recentModelCheck = { fingerprint, state, checkedAt: new Date().toISOString(), model }
   }
 
   async testModel(value: unknown): Promise<{ ok: true; model: string }> {
@@ -351,11 +413,16 @@ export class Runtime implements HttpHost {
     const stored = await this.modelCredentials.read()
     const apiKey = resolveModelKey(draft.clearApiKey ? undefined : draft.apiKey || stored.apiKey, draft.apiKeyEnv)
     const cfg = { baseUrl: draft.baseUrl, model: draft.model, temperature: draft.temperature, maxTokens: 32, timeoutMs: 15_000, ...(apiKey ? { apiKey } : {}) }
+    const fingerprint = this.modelFingerprint(draft, apiKey)
     try {
       const result = await deskLlmGenerate(cfg, [{ role: 'user', content: 'Reply with OK.', seq: 0, at: new Date().toISOString() }], [], undefined)
       if (result.finishReason !== 'stop' || !result.text) throw new Error('Model returned no normal text response')
+      await this.recordModelCheck(fingerprint, draft.model, 'passed')
       return { ok: true, model: draft.model }
-    } catch { throw new Error('Model test failed; check endpoint, credentials, and model') }
+    } catch {
+      await this.recordModelCheck(fingerprint, draft.model, 'failed')
+      throw new Error('Model test failed; check endpoint, credentials, and model')
+    }
   }
 
   async listModels(value: unknown): Promise<{ models: string[] }> {
@@ -1040,6 +1107,7 @@ export class Runtime implements HttpHost {
   saveSettings(value: unknown): Settings {
     const before = this.settings()
     const next = parseSettings(value)
+    if (JSON.stringify(before.deskLlm) !== JSON.stringify(next.deskLlm)) this.recentModelCheck = undefined
     const revision = this.store.saveSettings(next)
     this.settingsValue = next
     this.settingsRevisionValue = revision
@@ -1182,11 +1250,10 @@ export class Runtime implements HttpHost {
       const assignment = runningAssignment(ticket)
       if (ticket.recovery !== undefined || assignment === undefined || assignment.startedAt === undefined) continue
       const trigger = this.store.triggers.get(ticket.origin.triggerId)?.trigger
-      // The explicit Ticket budget wins, then the originating Trigger, then the global watchdog setting.
+      // Estimates inform the operator; only configured limits authorize an automatic stop.
       const triggerBudget = typeof trigger?.meta?.runtimeBudgetMs === 'number' ? trigger.meta.runtimeBudgetMs : 0
       const globalBudget = this.settings().watchdog.maxRuntimeMs
-      const budget = ticket.estimatedBudgetMs ?? (triggerBudget > 0 ? triggerBudget : globalBudget)
-      if (budget <= 0) continue
+      const budget = triggerBudget > 0 ? triggerBudget : globalBudget
       // Wall-clock starts at the first persisted running attempt and includes time between retries.
       // Taking the earliest timestamp, rather than summing intervals, avoids double-counting overlap.
       const firstStartedAt = ticket.assignments
@@ -1194,20 +1261,31 @@ export class Runtime implements HttpHost {
         .filter(Number.isFinite)
         .reduce((earliest, startedAt) => Math.min(earliest, startedAt), Date.parse(assignment.startedAt))
       const elapsed = now - firstStartedAt
-      if (elapsed < budget) continue
-      const nudgeKey = KV.budgetNudge(ticket.id, assignment.id)
+      const nudgeKey = KV.budgetWarning(ticket.id, 'limit')
+      const estimateKey = KV.budgetWarning(ticket.id, 'estimate')
+      if (ticket.estimatedBudgetMs !== undefined && elapsed >= ticket.estimatedBudgetMs
+        && this.store.get<boolean>(estimateKey) !== true) {
+        const estimate = ticket.estimatedBudgetMs
+        this.store.atomic(() => {
+          this.engine.budgetWarning(ticket.id, 'estimate', estimate,
+            `任务已超过总管预计的 ${Math.round(estimate / 60000)} 分钟；这是进度提醒，不会停止 Worker。`)
+          this.store.set(estimateKey, true)
+        })
+      }
+      if (budget <= 0 || elapsed < budget) continue
       if (this.store.get<boolean>(nudgeKey) !== true) {
-        this.store.set(nudgeKey, true)
-        this.engine.note(ticket.id,
-          `时间预算已用完（${Math.round(budget / 60000)} 分钟）。停止开始新的搜索或新的子任务，把已有的结论写成产物并登记，`
-          + '然后用 ordin_report 收尾——一份说明"预算到了、做到哪里、还差什么"的报告，好过一份永远交不出的完美报告。')
+        this.store.atomic(() => {
+          this.engine.budgetWarning(ticket.id, 'limit', budget,
+            `操作者设定的 ${Math.round(budget / 60000)} 分钟墙钟上限已到；再过 ${Math.round(BUDGET_GRACE_MS / 60000)} 分钟仍无终局，系统将停止任务。`)
+          this.store.set(nudgeKey, true)
+        })
         this.sessionHealth.problem(ticket.id,
-          `Ticket ${ticket.id}: its runtime budget of ${Math.round(budget / 60000)} minute(s) is up; it has been told to wrap up and report`)
+          `Ticket ${ticket.id}: its runtime budget of ${Math.round(budget / 60000)} minute(s) is up; the operator has been notified; no Worker input was added`)
         this.context.logger.warn('ordin — runtime budget reached for %s after %s ms', ticket.id, elapsed)
         continue
       }
       if (elapsed < budget + BUDGET_GRACE_MS) continue
-      // Still running a grace period after being told: the budget is not a request. `stopTicket` withdraws the
+      // Still running after the configured limit and grace: `stopTicket` withdraws the
       // Mandate, cancels the turn and stops background work — including the subagents, which is what makes
       // "delegate your way past the limit" not a strategy. Attributed to the system, not to the operator.
       const reason = `超出时间预算：预算 ${Math.round(budget / 60000)} 分钟，宽限 ${Math.round(BUDGET_GRACE_MS / 60000)} 分钟后仍在运行，已被系统停下。`

@@ -48,6 +48,10 @@ const directory = async (): Promise<string> => {
   directories.push(path)
   return path
 }
+const dropReply = async (dir: string, name: string, text: string): Promise<void> => {
+  await mkdir(join(dir, 'out'), { recursive: true })
+  await writeFile(join(dir, 'out', name), text, 'utf8')
+}
 afterAll(async () => { await Promise.all(directories.map(path => rm(path, { recursive: true, force: true }))) })
 
 const ME = { id: 77, username: 'ordin_bot', first_name: 'ordin' }
@@ -161,11 +165,6 @@ describe('downloading an attachment with fake HTTP', () => {
 })
 
 describe('consuming the replies ordin owes back', () => {
-  const dropReply = async (dir: string, name: string, text: string): Promise<void> => {
-    await mkdir(join(dir, 'out'), { recursive: true })
-    await writeFile(join(dir, 'out', name), text, 'utf8')
-  }
-
   it('hands the thread and the text to the sender, and only then moves the file out of the way', async () => {
     const dir = await directory()
     await dropReply(dir, 'reply-aaa.md', '---\nthread: 9\n---\n已经查完了。')
@@ -180,8 +179,8 @@ describe('consuming the replies ordin owes back', () => {
   it('leaves the file in place when sending fails, so the next drain tries again — at-least-once, never at-most-once', async () => {
     const dir = await directory()
     await dropReply(dir, 'reply-bbb.md', 'still here')
-    const first = await drainOut({ directory: dir, send: async () => { throw new Error('rate limited') } })
-    expect(first).toMatchObject({ sent: 0, failed: 1 })
+    const first = await drainOut({ directory: dir, send: async () => { throw Object.assign(new Error('rate limited'), { deliveryStatus: 'failed' }) } })
+    expect(first).toMatchObject({ sent: 0, failed: 1, partial: 0, unknown: 0 })
     expect(await readdir(join(dir, 'out'))).toContain('reply-bbb.md')
     // And the retry succeeds, sending the same text once.
     const sent: string[] = []
@@ -219,7 +218,7 @@ describe('consuming the replies ordin owes back', () => {
   it('treats a missing out/ as "nothing owed yet", not as an error', async () => {
     const dir = await directory()
     const tally = await drainOut({ directory: dir, send: async () => { throw new Error('must not be called') } })
-    expect(tally).toEqual({ sent: 0, failed: 0, skipped: 0 })
+    expect(tally).toEqual({ sent: 0, failed: 0, skipped: 0, partial: 0, unknown: 0 })
   })
 
   it('ignores subdirectories and dotfiles, so its own bookkeeping is never sent to a chat room', async () => {
@@ -231,6 +230,55 @@ describe('consuming the replies ordin owes back', () => {
     const sent: string[] = []
     await drainOut({ directory: dir, send: async (reply: Reply) => { sent.push(reply.text) } })
     expect(sent).toEqual(['real'])
+  })
+})
+
+describe('outbound delivery receipts', () => {
+  it('does not resend text after an unknown result', async () => {
+    const dir = await directory()
+    await dropReply(dir, 'reply-unknown.md', 'maybe delivered')
+    let calls = 0
+    const first = await drainOut({ directory: dir, send: async () => { calls += 1; throw new Error('connection reset') } })
+    const second = await drainOut({ directory: dir, send: async () => { calls += 1 } })
+    expect(first.unknown).toBe(1)
+    expect(second.unknown).toBe(1)
+    expect(calls).toBe(1)
+  })
+
+  it('retries only an explicitly failed attachment after text has arrived', async () => {
+    const dir = await directory()
+    const filePath = join(dir, 'attachment.csv')
+    await writeFile(filePath, 'a,b\n', 'utf8')
+    await dropReply(dir, 'reply-partial.md', `---\nfiles: ${filePath}\n---\ntext`)
+    let texts = 0, files = 0
+    const first = await drainOut({ directory: dir, send: async () => { texts += 1 }, sendFile: async () => { files += 1; throw Object.assign(new Error('rejected'), { deliveryStatus: 'failed' }) } })
+    const second = await drainOut({ directory: dir, send: async () => { texts += 1 }, sendFile: async () => { files += 1 } })
+    expect(first.partial).toBe(1)
+    expect(second.sent).toBe(1)
+    expect({ texts, files }).toEqual({ texts: 1, files: 2 })
+  })
+
+  it('marks attachments unsupported when this bridge has no file sender', async () => {
+    const dir = await directory()
+    const filePath = join(dir, 'attachment.csv')
+    await writeFile(filePath, 'a,b\n', 'utf8')
+    await dropReply(dir, 'reply-no-files.md', `---\nfiles: ${filePath}\n---\ntext`)
+    let texts = 0
+    const tally = await drainOut({ directory: dir, send: async () => { texts += 1 } })
+    expect(tally).toMatchObject({ sent: 0, partial: 1, unknown: 0 })
+    expect(texts).toBe(1)
+    const state = JSON.parse(await readFile(join(dir, 'out', '.reply-no-files.md.delivery.json'), 'utf8'))
+    expect(state.files).toEqual([{ filePath, status: 'unsupported', reason: 'channel-does-not-support-attachments' }])
+  })
+
+  it('does not send when the pre-send receipt cannot be persisted', async () => {
+    const dir = await directory()
+    await dropReply(dir, 'reply-no-receipt.md', 'text')
+    await mkdir(join(dir, 'out', '.reply-no-receipt.md.delivery.json'), { recursive: true })
+    let calls = 0
+    const tally = await drainOut({ directory: dir, send: async () => { calls += 1 } })
+    expect(tally).toMatchObject({ sent: 0, failed: 0, unknown: 1 })
+    expect(calls).toBe(0)
   })
 })
 
@@ -296,7 +344,7 @@ describe('a reply too long for the door it was sent through', () => {
       directory: dir, limit: 120,
       send: async (reply: { text: string }) => { sent.push(reply.text) },
     })
-    expect(tally).toMatchObject({ sent: 1, failed: 0 })
+    expect(tally).toMatchObject({ sent: 1, failed: 0, partial: 0, unknown: 0 })
     expect(sent.length).toBeGreaterThan(1)
     expect(strip(sent)).toBe(text)
     expect(await readdir(join(dir, 'out'))).toEqual(['sent'])
@@ -321,15 +369,18 @@ describe('a reply too long for the door it was sent through', () => {
       send: async (reply: { text: string }) => {
         attempts += 1
         seen.push(reply.text)
-        if (attempts === 2) throw new Error('message is too long')
+        if (attempts === 2) { const error = new Error('message is too long'); Object.assign(error, { deliveryStatus: 'failed' }); throw error }
       },
     })
-    expect(first).toMatchObject({ sent: 0, failed: 1 })
+    expect(first).toMatchObject({ sent: 0, failed: 0, partial: 1, unknown: 0 })
     expect(await readdir(join(dir, 'out'))).toContain('reply-part.md')
     const pieces = chunkText(text, 120)
     expect(seen).toHaveLength(2)
     // Where it got to is recorded, and it is not a reply file (dot-prefixed, so the drain never reads it as one).
-    expect(await readFile(join(dir, 'out', '.reply-part.md.progress'), 'utf8')).toBe('1')
+    const statePath = join(dir, 'out', '.reply-part.md.delivery.json')
+    expect(JSON.parse(await readFile(statePath, 'utf8')).text.map((item: { status: string }) => item.status)).toEqual([
+      'delivered', 'failed', ...Array(pieces.length - 2).fill('pending'),
+    ])
 
     const second: string[] = []
     const retry = await drainOut({ directory: dir, limit: 120, send: async (reply: { text: string }) => { second.push(reply.text) } })
@@ -365,7 +416,7 @@ describe('outbound file attachments and message receipts in drainOut (Pkg 2)', (
       sendFile: async ({ filePath }: { filePath: string }) => { sentFiles.push(filePath) },
       onSent: async (r: { messageId: string; ticketId: string; thread?: string }) => { receipts.push(r) },
     })
-    expect(tally).toMatchObject({ sent: 1, failed: 0 })
+    expect(tally).toMatchObject({ sent: 0, failed: 0, partial: 1, unknown: 0 })
     expect(sentFiles).toEqual([realFile])
     expect(receipts).toEqual([{ messageId: '-100200-99', ticketId: 'ticket-888', thread: 'group:-100200' }])
   })

@@ -772,6 +772,35 @@ describe('per-channel health (N5)', () => {
     } finally { await source.stop() }
   })
 
+  it('classifies pending replies from per-item delivery receipts', async () => {
+    const ops = directory()
+    const out = join(ops, 'out')
+    mkdirSync(out, { recursive: true })
+    writeFileSync(join(out, 'reply.md'), 'reply body', 'utf8')
+    writeFileSync(join(out, '.reply.md.delivery.json'), JSON.stringify({
+      text: [{ status: 'delivered' }],
+      files: [
+        { filePath: '/tmp/failed.pdf', status: 'failed' },
+        { filePath: '/tmp/unsupported.pdf', status: 'unsupported' },
+      ],
+    }), 'utf8')
+    writeFileSync(join(out, 'legacy.md'), 'legacy reply', 'utf8')
+    writeFileSync(join(out, '.legacy.md.progress'), '1', 'utf8')
+    const context = harness(doc({ channels: [channel('ops', ops)] }))
+    const source = new ChatSource(context.host)
+    await source.start()
+    try {
+      await source.poll()
+      expect(source.channels()[0]).toMatchObject({
+        pendingReplies: 2,
+        outbound: { unrecorded: 0, partial: 1, unknown: 1, failed: 1, unsupported: 1 },
+      })
+      expect(source.channels()[0]!.outbound!.attention).toEqual(expect.arrayContaining([
+        expect.stringContaining('reply.md'), expect.stringContaining('legacy.md'),
+      ]))
+    } finally { await source.stop() }
+  })
+
   it('says when something last came in, and stays silent rather than guessing when nothing ever has', async () => {
     const ops = directory()
     const context = harness(doc({ channels: [channel('ops', ops)] }))

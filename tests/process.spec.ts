@@ -133,6 +133,40 @@ describe('ProcessRegistry', () => {
     expect(reg.list().every((r: ProcessRecord) => r.status !== 'running')).toBe(true)
   })
 
+  it('keeps the latest 64 settled records without evicting a live child', async () => {
+    const reg = registry()
+    const live = reg.spawn({ owner: 'live', argv: [NODE, '-e', SLEEPER] })
+    const signal = AbortSignal.abort()
+    const settled = []
+    for (let i = 0; i < 65; i++) {
+      const record = reg.spawn({ owner: 'finished', argv: [NODE, '-e', SLEEPER], signal })
+      const result = await reg.wait(record.id)
+      expect(result.status).toBe('canceled')
+      settled.push(record)
+    }
+    expect(reg.list('finished')).toEqual(settled.slice(1))
+    expect(reg.get(settled[0]!.id)).toBeUndefined()
+    expect(await reg.wait(settled[64]!.id)).toMatchObject({ status: 'canceled' })
+    expect(reg.get(live.id)).toBe(live)
+    await reg.cancel(live.id, 100)
+    await expectDead(live.pid)
+  })
+
+  it('evicts old captured output when the settled byte budget is full', async () => {
+    const reg = registry()
+    const script = "process.stdout.write('x'.repeat(1024 * 1024))"
+    const settled = []
+    for (let i = 0; i < 9; i++) {
+      const record = reg.spawn({ owner: 'output', argv: [NODE, '-e', script] })
+      expect(await reg.wait(record.id)).toMatchObject({ status: 'exited', exitCode: 0 })
+      settled.push(record)
+    }
+    const retained = reg.list('output')
+    expect(retained.map(record => record.id)).toEqual(settled.slice(1).map(record => record.id))
+    expect(retained.reduce((sum, record) => sum + Buffer.byteLength(record.stdout), 0)).toBe(8 * 1024 * 1024)
+    expect(settled[0]!.stdout.length).toBe(1024 * 1024)
+  })
+
   it('cancels via AbortSignal and reaps the child', async () => {
     const reg = registry()
     const ac = new AbortController()

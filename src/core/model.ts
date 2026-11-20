@@ -173,6 +173,8 @@ export interface Dependency {
 export type TicketEventType =
   | 'created' | 'launched' | 'delivered' | 'delivery_failed' | 'report' | 'turn_ended' | 'input'
   | 'retried' | 'interrupted' | 'resumed' | 'stopped' | 'failed' | 'ended' | 'classified' | 'session_bound' | 'dependency'
+  /** Operator-visible timing notice; never creates work for the Worker. */
+  | 'budget_warning'
   /**
    * The front desk said something back to whoever asked for this Ticket (S3a).
    *
@@ -507,7 +509,7 @@ export interface Ticket {
   readonly workerCheckedAt?: string
   readonly workerProbeOk?: boolean
   readonly workerProbeProblem?: string
-  /** A wall-clock budget the user set for this Ticket, in milliseconds. */
+  /** A planning estimate in milliseconds; exceeding it warns without stopping work. */
   readonly estimatedBudgetMs?: number
   /** Requested output constraints, recorded before dispatch; distinct from the acceptance verdict. */
   readonly acceptanceCriteria?: string

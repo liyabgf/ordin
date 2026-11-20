@@ -775,7 +775,7 @@
         </summary>
         <p class="muted" style="font-size:12px;margin-top:8px">
           总管使用独立的 OpenAI 兼容 API。填写接口地址、模型和参数后保存，其他设置会原样保留。
-          密钥写入独立的受限凭据文件；界面只显示是否已保存，不会回显。
+          密钥写入独立的受限凭据文件。界面显示密钥状态，密钥值始终隐藏。
           也可使用环境变量作为备选认证来源。
           测试连接会实际请求此模型端点；失败原因会显示在此处。
         </p>
@@ -3970,10 +3970,20 @@ WantedBy=default.target
         ? el('p', { class: 'muted' }, '还没有频道：用下面的表单加一条（也可以在「设置」页的高级区直接改 sources.chat.channels）。')
         // 【B-6】「心跳」列加在状态之后：它回答"主动脉通不通"——桥死了积压/回信是看不出来的
         // （消息没来就没有积压），心跳年龄是唯一当晚上线当晚就能报的数。
-        : table(['频道', '目录', '状态', '心跳', '积压', '待取回信', '最近进气', '操作'], channels.map(channel => {
-          // 每频道健康（N5）：三个数各自回答一个问题——积压是"你要去映射身份"，
-          // 待取回信是"**桥没在跑**"（ordin 已经写完答案，没人来取），最近进气区分"连着但安静"与"三天没动静"。
+        : table(['频道', '目录', '状态', '心跳', '积压', '回信投递', '最近进气', '操作'], channels.map(channel => {
           const fact = channelHealth.get(channel.id)
+          const outbound = fact?.outbound
+          const delivery = fact?.outboundError !== undefined
+            ? el('span', { class: 'bad', title: fact.outboundError }, '读不到投递目录')
+            : el('div', { class: fact?.pendingReplies > 0 ? 'warn' : '' },
+              el('div', {}, '队列中 ' + (fact?.pendingReplies ?? 0)),
+              ...[[outbound?.unrecorded, '暂无回执'], [outbound?.partial, '部分送达'],
+                [outbound?.unknown, '结果待确认'], [outbound?.failed, '有明确失败项'],
+                [outbound?.unsupported, '有不支持的附件']]
+                .filter(([count]) => count > 0).map(([count, label]) => el('div', {}, label + ' ' + count)),
+              ...(outbound?.attention?.length ? [el('details', {}, el('summary', {}, '查看回信文件'),
+                ...outbound.attention.map(item => el('div', {}, item)),
+                el('p', {}, '结果未知时请先在渠道核对；附件不支持时请改用其他方式送达。'))] : []))
           return [
           channel.id, channel.directory,
           channel.enabled === false
@@ -3996,9 +4006,7 @@ WantedBy=default.target
               : el('span', { class: fact.waiting > 0 ? 'warn' : '' }, String(fact.waiting)),
           fact === undefined || channel.enabled === false || fact.error !== undefined
             ? el('span', { class: 'muted' }, '—')
-            // 长期非零 = 桥停了。这是"答案没送到"与"答案本来就不欠"唯一的区分点。
-            : el('span', { class: fact.pendingReplies > 0 ? 'warn' : '', title: 'out/ 里还没被桥取走的回信数；长期非零说明桥没在跑' },
-              String(fact.pendingReplies)),
+            : delivery,
           fact === undefined || channel.enabled === false || fact.error !== undefined
             ? el('span', { class: 'muted' }, '—')
             : fact.lastAcceptedAt === undefined
@@ -4515,10 +4523,6 @@ WantedBy=default.target
         el('div', { class: 'row' },
           el('b', {}, skill.title),
           el('span', { class: `stage ${skill.enabled ? 'done' : 'stopped'}` }, skill.builtIn ? '内置常驻' : skill.enabled ? '已启用' : '已暂停'),
-          // 语义与 `SavedSkill.useCount` 对齐：它数的是**用过这门手艺的任务数**（同一张任务重复加载只算一次，
-          // 且只算宿主真正加载成功的那次），不是调用次数。写成「已复用 N 次」会让操作者以为一个 worker
-          // 重试五次就等于五张任务验证过它——而那正是这个数要避免的误读。
-          skill.useCount !== undefined ? el('span', { class: 'chip' }, `被 ${skill.useCount} 张任务用过`) : null,
           el('span', { style: 'margin-left:auto;display:flex;gap:6px;align-items:center' }, ...rowActions)),
         el('p', { class: 'muted', style: 'font-size:12px;margin:4px 0 0' }, skill.description),
         // 与 sessions.ts 的 craftLines 同一句话：晋升手艺的正文由 worker 撰写、没有人复核过。说在这里，
@@ -5268,7 +5272,8 @@ WantedBy=default.target
   const loadFriendlyHome = async () => {
     await refreshHomeInbox()
     try { const model = await api('model/config'); const execution = await api('execution/status');
-      $('home-readiness').replaceChildren(document.createTextNode((model.configuredKey ? '对话模型：'+model.defaultModel : '开始前，请先在设置中检查模型和密钥。')+' · '+(execution.health?.ok ? '执行工具协议检查通过，真实任务以执行回执为准。' : '执行工具尚未确认可用，仍可先整理需求。')), el('button',{class:'linklike',onclick:()=>show('settings')}, ' 打开设置'))
+      const check = model.modelCheck?.state === 'passed' ? '连接检查通过' : model.modelCheck?.state === 'failed' ? '最近连接检查失败' : '连接尚未检查'
+      $('home-readiness').replaceChildren(document.createTextNode((model.configuration === 'ready' ? '默认模型：'+model.defaultModel : '模型配置未完整')+' · '+(({ available: '已读取密钥', not_required: '未提供密钥', missing_named_env: '缺少指定环境变量', invalid: '密钥无效' }[model.credential] || '密钥状态未知'))+' · '+check+' · '+(execution.health?.ok ? '执行工具协议检查通过，真实任务以执行回执为准。' : '执行工具尚未确认可用，仍可先整理需求。')), el('button',{class:'linklike',onclick:()=>show('settings')}, ' 打开设置'))
     } catch(error) { $('home-readiness').replaceChildren(document.createTextNode('读取配置状态失败：' + error.message + '。'), el('button',{class:'linklike',onclick:()=>show('settings')}, '打开设置')) }
   }
   void loadFriendlyHome()
@@ -5330,17 +5335,11 @@ WantedBy=default.target
         if (st.configured && st.state !== 'idle') { badge.textContent = '●'; badge.classList.remove('hidden') }
         else { badge.classList.add('hidden') }
       }
-      const hint = $('desk-config-hint')
-      if (hint) {
-        if (st.configured) {
-          hint.textContent = `✓ 已配置：${st.provider} / ${st.model} · 状态：${st.state === 'idle' ? '空闲' : st.state === 'thinking' ? '思考中' : '执行工具'}`
-          hint.style.color = 'var(--ok,#1a7f37)'
-          const ch = $('desk-config-summary-hint')
-          if (ch) { ch.textContent = `${st.provider} / ${st.model}`; ch.className = 'chip ok'; ch.style.fontSize = '11px' }
-        } else {
-          hint.textContent = '未配置 — 在下面填写 OpenAI 兼容 base URL 和 model 后保存'
-          hint.style.color = ''
-        }
+      const ch = $('desk-config-summary-hint')
+      if (ch) {
+        ch.textContent = st.configured ? `${st.provider} / ${st.model}` : ''
+        ch.className = 'chip ' + (st.configured ? 'ok' : 'muted')
+        ch.style.fontSize = '11px'
       }
       return st
     } catch (e) { return null }
@@ -5452,7 +5451,8 @@ WantedBy=default.target
       savedModelIds = [...new Set([...(cfg.models || []), ...(cfg.model ? [cfg.model] : [])])]
       selectedModels = new Set(savedModelIds); modelCandidates = [...savedModelIds]; renderModelLibrary()
       $('desk-api-key').value = ''
-      $('desk-config-hint').textContent = credential.configuredKey ? '认证已配置，密钥不回显。' : '填写 API key 或使用环境变量认证。'
+      const check = credential.modelCheck?.state === 'passed' ? '最近连接检查通过。' : credential.modelCheck?.state === 'failed' ? '最近连接检查失败。' : '连接尚未检查。'
+      $('desk-config-hint').textContent = (credential.configuration === 'ready' ? '模型配置已填写。' : '模型配置未完整。') + (({ available: '已读取密钥', not_required: '未提供密钥', missing_named_env: '缺少指定环境变量', invalid: '密钥无效' }[credential.credential] || '密钥状态未知') + '。') + check
     } catch(e) { $('desk-config-hint').textContent = '读取模型配置失败：' + e.message }
   }
   function modelDraft() {

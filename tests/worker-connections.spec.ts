@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { readFile, stat, writeFile } from 'node:fs/promises'
+import { chmod, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { WorkerConnections } from '../src/app/worker-connections.ts'
 import { DshServiceDriver } from '../src/drivers/dsh-service.ts'
@@ -118,6 +118,7 @@ it.each([
   const stateDir = tempDir('ordin-connections-')
   const file = join(stateDir, 'worker-connections.json')
   await writeFile(file, content, {mode})
+  await chmod(file, mode)
   const first = fixture(stateDir)
   await expect(first.connections.load()).rejects.toThrow('执行端连接设置无效或权限不安全')
   for (const backend of backends) {

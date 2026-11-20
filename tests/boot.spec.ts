@@ -4,6 +4,7 @@
  * 全部在 /tmp 独立目录进行（tempDir 注册生死），不启动 HTTP、不触碰任何真实后端。
  * executionReady=false 是这里的合同之一：装配面必须诚实（AGENTS.md A6）。
  */
+import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -13,10 +14,6 @@ import { ConfigError, DEFAULT_PORT, ENV_KEYS, parsePort, resolveConfig } from '.
 import { silentLogger } from '../src/app/logger.ts'
 import { LockHeld } from '../src/app/lock.ts'
 import { tempDir } from './helpers/temp.ts'
-
-// takeLock 每次 boot 注册一个 process 'exit' 释放钩子（release 后幂等空转，生产一进程一 boot）。
-// 本文件同进程 boot 十余次，超过默认 10 个上限；显式放宽，警告不是残留，残留由断言检查。
-process.setMaxListeners(40)
 
 const logger = silentLogger()
 
@@ -127,6 +124,7 @@ describe('bootstrap 生命周期', () => {
     const dir = tempDir('ordin-boot-cycle-')
     const lockPath = join(dir, 'ordin.lock')
     const dbPath = join(dir, 'ordin.sqlite3')
+    const exitListeners = process.listenerCount('exit')
     for (let round = 1; round <= 3; round++) {
       const app = bootIn(dir)
       expect(app.status().phase).toBe('created')
@@ -135,9 +133,23 @@ describe('bootstrap 生命周期', () => {
       await app.stop()
       expect(app.status().phase).toBe('stopped')
       expect(existsSync(lockPath), `round ${round}: 锁文件应已释放`).toBe(false)
+      expect(process.listenerCount('exit'), `round ${round}: 退出监听器应回到基线`).toBe(exitListeners)
       expect(existsSync(dbPath), `round ${round}: 数据库应保留`).toBe(true)
       expect(existsSync(`${dbPath}-wal`), `round ${round}: WAL 应随干净关闭消失`).toBe(false)
     }
+  })
+
+  it('子进程正常退出时清理未显式释放的状态锁', () => {
+    const dir = tempDir('ordin-boot-exit-lock-')
+    const lockModule = new URL('../src/app/lock.ts', import.meta.url).href
+    const child = spawnSync(process.execPath, [
+      '--experimental-transform-types', '--input-type=module', '--eval',
+      "const { takeLock } = await import(process.argv[1]); takeLock(process.argv[2]); console.log('lock acquired')",
+      lockModule, dir,
+    ], { encoding: 'utf8', timeout: 5000 })
+    expect(child.status, child.stderr).toBe(0)
+    expect(child.stdout).toContain('lock acquired')
+    expect(existsSync(join(dir, 'ordin.lock'))).toBe(false)
   })
 
   it('重复 stop 幂等；未 start 的 boot 也能 stop 干净', async () => {
