@@ -35,9 +35,9 @@
 
 ## 当前明确未实现
 
-- 多用户认证与授权。
+- 多用户认证与授权（当前仅本机 default Profile，没有可认证的操作者身份）。
 - VM/容器级 worker 隔离。
-- 真实平台双向附件和 Worker 端到端仍待分别验收。当前探测结果见 [Worker 准入矩阵](docs/acceptance/F6-worker-admission.md)。
+- Claude Code 与真实平台渠道尚未验收：Claude CLI 已定位但未登录；DSH CLI 0.2.1-rc.2 缺只读任务所需参数，当前按服务模式接入。Codex 已完成真宿主任务验收。逐项结论见 [Worker 准入矩阵](docs/acceptance/F6-worker-admission.md)。
 
 ## 操作者建议
 

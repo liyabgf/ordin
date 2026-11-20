@@ -58,6 +58,8 @@ Ordin's conversation model and DSH's own model credentials are independent. Do n
 
 Use **Settings → Execution connections** to check or connect a local backend. Availability depends on the program being installed and logged in, or its service running. DSH service mode uses DSH's own permission configuration. Codex and Claude Code use their respective local installations and login states.
 
+As of this version: Codex has completed a real task acceptance; DSH is connected through service mode with a service URL and token; Claude Code is supported but needs a local account login and has not been accepted yet.
+
 Ordin reports execution receipts and task acceptance separately. Received, started, or delivered does not mean completed. A connection ID identifies a local connection configuration version; it contains no credential. Historical tasks without a recorded ID are shown as unknown.
 
 ## Assets and deliverables

@@ -1,5 +1,11 @@
 # Ordin Publication Ledger
 
+## Documentation refresh（2026-11-20）
+
+- Scope: sync refreshed README (both languages), SECURITY, execution goal, architecture, functional plan, recovery guide and manager workbench plan from source `cd82832`.
+- Change: backend status now states Codex has a real-task acceptance, DSH connects through service mode, and Claude Code is installed but not logged in; removed stale "Codex not integrated", "Claude not found", "51 files/873 tests", "planning not started" and "not deployed" statements. Architecture gained the manager capability layer and dropped a link to a document that is not published here.
+- Verification: `tests/smoke.spec.ts` exit 0 (6 tests) in this worktree; `git diff --check` clean; no personal paths, keys or operational ids in the diff.
+
 ## Manager capability and remediation release（2026-11-20）
 
 - Scope: selective sync from source `28544de`. Include runtime code, panel pages, tests, bridge delivery receipts, verifier scripts, contracts and user-facing documentation.

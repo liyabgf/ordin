@@ -1,6 +1,6 @@
 # 目标架构
 
-> 细节与证据见[可行性评估](background/multiharness-feasibility-20261114.md)；这里只定工程结构。
+> 这里只定工程结构；可行性与取舍见迁移计划与准入记录。
 
 ## 形状
 
@@ -12,6 +12,8 @@
    Source → Gate → Decision → Mandate+Ticket → Assignment
                   │
            DeskLoop（总管分诊，自带 LLM client）
+                  │
+           Manager 能力层（Registry / 资产读取 / 健康 / 固定配方）
                   │
            WorkerDriver SPI（核心抽象，新增）
         ┌─────────┼─────────┐
@@ -36,6 +38,13 @@ interface WorkerDriver {
 }
 type NormEvent = { kind: 'started'|'text'|'tool'|'usage'|'report'|'final'|'error'; /* … */ }
 ```
+
+## Manager 能力层
+
+- **工具路径 Registry**：`src/app/tool-registry.ts` 静态登记 coordinator / desk / worker 三条路径的工具名与风险类别，绑定既有 schema 与 handler。它只做投影与缺项检查，不替代对象权限。
+- **资产读取**：`manager-asset-reads.ts` 提供目录搜索、固定版本读取与关系查询；Ticket 产物正文经 `manager-artifact-reader.ts` 另行校验来源、成功终局、登记路径、物理边界与完整哈希。
+- **运行健康**：`manager-health.ts` 只读当前所选执行端的配置、进程内最近检查与近期任务回执，不主动探测。
+- **固定配方**：`manager-recipes.ts` 提供资产比较、任务补材料与失败诊断三条操作配方，只引导现有工具，不新增写授权。
 
 ## 报告通道（两级）
 

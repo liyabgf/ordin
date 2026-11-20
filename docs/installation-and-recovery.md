@@ -5,7 +5,7 @@
 ## 前置条件
 
 - Node.js >=24.9.0；仓库当前实测Node 24.21.0。仓库同时有npm与pnpm lockfile，选择其中一套并按对应lockfile安装；本手册使用npm ci。发布前还需干净目录安装证据和依赖版本清单。
-- 每个 Ordin 实例使用专属 config/stateDir/workRoot/inbox/port。Worker 版本与权限参数须符合准入条件。Codex CLI `0.169.0-alpha.11.1` 已在独立环境通过四探针。DSH `0.2.1-rc.2` 缺少只读任务所需参数，Claude 尚未定位到可用 CLI。见 [Worker 准入记录](acceptance/F6-worker-admission.md)。
+- 每个 Ordin 实例使用专属 config/stateDir/workRoot/inbox/port。Worker 版本与权限参数须符合准入条件。Codex CLI `0.169.0-alpha.11.1` 已通过四探针并完成真实任务验收。DSH `0.2.1-rc.2` 的 CLI 缺少只读任务所需参数，按服务模式接入。Claude Code CLI `2.1.325` 已定位，但 `auth status` 显示未登录，尚未验收。见 [Worker 准入记录](acceptance/F6-worker-admission.md)。
 - API key通过模型配置界面/API写入独立凭据文件（0600）；没有交互式凭据CLI。目录需要可访问的执行权限，不设成0600。不要将key写入普通settings或提交日志；bridge token保留在bridge自己的env配置。
 
 ## 干净目录运行（开发/验收路径）
